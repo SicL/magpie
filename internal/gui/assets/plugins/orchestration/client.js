@@ -16,6 +16,7 @@ magpie.plugin("orchestration", (ctx) => {
   let showingCodeBuddySetup = false;
   let codeBuddyConfig = null;
   let codeBuddyProbe = null;
+  let codeBuddyModelCheck = null;
   let zcodeVerified = new Set();
   let editingDeps = "";
   let dispatchReport = null;
@@ -30,6 +31,9 @@ magpie.plugin("orchestration", (ctx) => {
   let recovering = "";
   let showingHistory = "";
   let checkpointRows = [];
+  let handoffFor = "";
+  let handoffPreview = null;
+  let handoffRows = [];
   let recoveryRows = [];
 
   function field(title, placeholder, value) {
@@ -212,6 +216,7 @@ magpie.plugin("orchestration", (ctx) => {
     await perform(async()=>{
       checkpointRows=await api("orchestration/tasks/"+encodeURIComponent(taskId)+"/checkpoints");
       recoveryRows=await api("orchestration/tasks/"+encodeURIComponent(taskId)+"/recoveries");
+      handoffRows=await api("orchestration/tasks/"+encodeURIComponent(taskId)+"/handoffs");
       showingHistory=taskId;
     });
   }
@@ -220,6 +225,7 @@ magpie.plugin("orchestration", (ctx) => {
     try{
       const checkpoints=await api("orchestration/tasks/"+encodeURIComponent(task.id)+"/checkpoints");
       const latest=checkpoints[0];
+      const snapshot=await api("orchestration/tasks/"+encodeURIComponent(task.id)+"/handoff");
       const lines=[
         "Project: "+project.name,
         "Task: "+task.title,
@@ -231,7 +237,10 @@ magpie.plugin("orchestration", (ctx) => {
         "Acceptance criteria: "+task.details,
         "Latest checkpoint: "+(latest?.summary||"none"),
         "Tests: "+(latest?.testStatus||"not_run"),
-        "Git HEAD: "+(latest?.gitHead||worktree.head||"unknown"),
+        "Git HEAD: "+(snapshot?.gitHead||latest?.gitHead||worktree.head||"unknown"),
+        "Handoff readiness: "+(snapshot?.ready===true?"verified snapshot": "NOT verified"),
+        "Handoff blocker: "+(snapshot?.reason||"none"),
+        "Snapshot fingerprint: "+(snapshot?.fingerprint||"unavailable"),
         "Uncommitted changes: "+(latest?.dirty?"yes":"unknown"),
         "Native DSH session: "+(latestRun?.sessionId||"none"),
         "Do not let multiple Agents write this same Worktree concurrently."
@@ -335,6 +344,19 @@ magpie.plugin("orchestration", (ctx) => {
       const label=codeBuddyProbe.cliFound?t("CodeBuddy CLI help contract verified"):t("CodeBuddy CLI probe failed");
       form.append(el("p","orch-capability",label+": "+(codeBuddyProbe.reason||"")));
     }
+    if(codeBuddyModelCheck){
+      const labels={
+        unconfigured:t("CodeBuddy CLI is not configured"),
+        cli_unavailable:t("CodeBuddy CLI help check failed"),
+        unsafe_cli_contract:t("CodeBuddy cannot disable all tools"),
+        unverified:t("CodeBuddy isolated model reply not verified"),
+        timed_out:t("CodeBuddy isolated model check timed out"),
+        model_replied:t("CodeBuddy responded to isolated no-tools prompt")
+      };
+      form.append(el("p","orch-capability",
+        labels[codeBuddyModelCheck.status]||t("CodeBuddy isolated model reply not verified")));
+    }
+    form.append(el("p","orch-safety",t("This fixed-prompt check uses a temporary empty workspace and stores no credentials. Even success does not authorize code access, automated tasks or file changes.")));
     const actions=el("div","orch-actions");
     const save=button("Save CodeBuddy CLI path",()=>{});
     save.type="submit";save.onclick=null;
@@ -343,12 +365,18 @@ magpie.plugin("orchestration", (ctx) => {
       perform(async()=>{
         codeBuddyConfig=await api("orchestration/agents/codebuddy/config",{executable:cli.input.value});
         codeBuddyProbe=null;
+        codeBuddyModelCheck=null;
         status(t("CodeBuddy CLI path saved"),"ok");
       });
     };
     actions.append(save,button("Verify CodeBuddy CLI",()=>perform(async()=>{
       codeBuddyProbe=await api("orchestration/agents/codebuddy/probe",{confirm:true});
       status(codeBuddyProbe.reason,codeBuddyProbe.cliFound?"ok":"err");
+    })));
+    actions.append(button("Check CodeBuddy isolated model",()=>perform(async()=>{
+      codeBuddyModelCheck=await api("orchestration/agents/codebuddy/model/check",{confirm:true});
+      const passed=codeBuddyModelCheck.status==="model_replied";
+      status(passed?t("CodeBuddy responded to isolated no-tools prompt"):t("CodeBuddy isolated model reply not verified"),passed?"ok":"err");
     })));
     actions.append(button("Cancel",()=>{showingCodeBuddySetup=false;render();}));
     form.append(actions);
@@ -630,6 +658,10 @@ magpie.plugin("orchestration", (ctx) => {
         if(existing) {
           actions.append(button("Add checkpoint",()=>{editingCheckpoint=q.id;render();}));
           actions.append(button("View handoff history",()=>openHandoffHistory(q.id)));
+          actions.append(button("Review Git handoff",()=>perform(async()=>{
+            handoffPreview=await api("orchestration/tasks/"+encodeURIComponent(q.id)+"/handoff");
+            handoffFor=q.id;
+          })));
           const handoffButton=button("Copy task handoff",()=>copyHandoff(q,active,existing,latestRun,handoffButton));
           actions.append(handoffButton);
         }
@@ -643,6 +675,31 @@ magpie.plugin("orchestration", (ctx) => {
           }), "text"));
         }
         item.append(actions);
+        if(handoffFor===q.id && handoffPreview){
+          const panel=el("div","orch-history");
+          panel.append(el("b","",t("Verified Git handoff preview")));
+          panel.append(el("p","",t("Handoff current Git HEAD")+": "+(handoffPreview.gitHead||t("Handoff HEAD unavailable"))));
+          panel.append(el("p","",handoffPreview.clean?t("Handoff Worktree clean"):t("Handoff Worktree has uncommitted changes")));
+          panel.append(el("p","",t("Handoff assigned agent")+": "+handoffPreview.agent));
+          for(const prior of handoffPreview.prerequisites||[]){
+            panel.append(el("p","",prior.agent+": "+prior.testedHead.slice(0,12)+" · "+t("Handoff reported test status")+": "+prior.testsReported));
+          }
+          if(!handoffPreview.ready){
+            panel.append(el("p","orch-failure",t("Handoff blocked")+": "+(handoffPreview.reason||"")));
+          }else{
+            panel.append(el("p","orch-safety",t("Human acknowledgment records this Git snapshot; it does not certify independent tests or authorize an Agent run.")));
+            panel.append(button("Acknowledge Git handoff",()=>perform(async()=>{
+              await api("orchestration/tasks/"+encodeURIComponent(q.id)+"/handoffs",{
+                confirm:true,revision:handoffPreview.revision,fingerprint:handoffPreview.fingerprint
+              });
+              handoffPreview=null;
+              handoffFor="";
+              status(t("Git handoff receipt recorded"),"ok");
+            })));
+          }
+          panel.append(button("Cancel",()=>{handoffFor="";handoffPreview=null;render();}));
+          item.append(panel);
+        }
         if (editingCheckpoint===q.id) item.append(checkpointEditor(q,latestRun));
         if (editingDeps===q.id) item.append(dependencyEditor(q));
         if (recovering===q.id && latestRun?.state==="interrupted") item.append(recoveryEditor(q,latestRun));
@@ -654,6 +711,12 @@ magpie.plugin("orchestration", (ctx) => {
             const entry=el("div","orch-history-entry");
             entry.append(el("span","",c.createdAt+" · "+c.testStatus+" · "+c.gitHead.slice(0,10)+(c.dirty?" · "+t("Uncommitted Worktree changes"):"")));
             entry.append(el("p","",c.summary));
+            history.append(entry);
+          }
+          for(const receipt of handoffRows){
+            const entry=el("div","orch-history-entry");
+            entry.append(el("span","",t("Acknowledged Git handoff")+" · "+receipt.recipient+" · "+receipt.createdAt));
+            entry.append(el("p","",receipt.gitHead.slice(0,12)+" · "+receipt.fingerprint.slice(0,12)));
             history.append(entry);
           }
           for(const r of recoveryRows){

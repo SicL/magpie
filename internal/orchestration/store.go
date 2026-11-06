@@ -90,6 +90,10 @@ func Open(file string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initialize dependency graph: %w", err)
 	}
+	if err := s.ensureHandoffSchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize handoff receipts: %w", err)
+	}
 	if err := s.ensureCheckpointSchema(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize checkpoints: %w", err)
@@ -340,6 +344,13 @@ func (s *Store) DeleteTask(id string) error {
 	}
 	if checkpoints > 0 {
 		return fmt.Errorf("%w: task has checkpoints", ErrConflict)
+	}
+	var handoffs int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM agent_handoff_receipts WHERE task_id=?", id).Scan(&handoffs); err != nil {
+		return err
+	}
+	if handoffs > 0 {
+		return fmt.Errorf("%w: task has acknowledged Git handoffs", ErrConflict)
 	}
 	res, err := s.db.Exec("DELETE FROM tasks WHERE id=? AND status IN ('pending','blocked','failed','done')", id)
 	if err != nil {
