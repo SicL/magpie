@@ -307,52 +307,7 @@ func (r *RunService) start(taskID string, revision int64, sourceRunID string) (R
 		}
 	}
 
-	run, err := r.store.reserveRun(t, revision, cwd, sourceRunID)
-	if err != nil {
-		return Run{}, err
-	}
-	logPath, err := r.store.logFile(run.ID)
-	if err != nil {
-		_ = r.store.finishRun(run.ID, "failed", -1, "cannot prepare run log")
-		return Run{}, err
-	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		_ = r.store.finishRun(run.ID, "failed", -1, "cannot open run log")
-		return Run{}, err
-	}
-	writer := &lineLog{file: logFile, onSession: func(sid string) { _ = r.store.setRunSession(run.ID, sid) }}
-	cmd := proc.Command(executable, args...)
-	cmd.WaitDelay = 2 * time.Second
-	cmd.Dir = cwd
-	cmd.Stdin = strings.NewReader(prompt)
-	if len(r.env) > 0 {
-		cmd.Env = append(os.Environ(), r.env...)
-	}
-	cmd.Stdout = writer
-	cmd.Stderr = agentStderr{log: writer}
-	tree, err := proc.StartTree(cmd)
-	if err != nil {
-		_ = writer.Close()
-		_ = r.store.finishRun(run.ID, "failed", -1, "Agent process could not start")
-		return Run{}, fmt.Errorf("start DeepSeek Harness: %w", err)
-	}
-	active := &liveRun{tree: tree}
-	r.active[run.ID] = active
-	r.wait.Add(1)
-	if err := r.store.runStarted(run.ID, cmd.Process.Pid); err != nil {
-		active.cancelling = true
-		tree.Kill()
-		// Wait owns both writer and task status updates even after startup failure.
-		go r.await(run.ID, active, writer)
-		return Run{}, fmt.Errorf("persist DeepSeek Harness process start: %w", err)
-	}
-	go r.await(run.ID, active, writer)
-	result, err := r.store.Run(run.ID)
-	if err != nil {
-		return Run{}, fmt.Errorf("read started agent run %s: %w", run.ID, err)
-	}
-	return result, nil
+	return r.launchRun(t, revision, cwd, adapterDSH, executable, args, prompt, sourceRunID, nil)
 }
 
 func (r *RunService) await(id string, job *liveRun, log *lineLog) {

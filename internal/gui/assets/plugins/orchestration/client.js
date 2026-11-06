@@ -8,6 +8,10 @@ magpie.plugin("orchestration", (ctx) => {
   let dependencies = [];
   let capabilities = [];
   let showingCapabilities = false;
+  let showingZCodeSetup = false;
+  let zcodeConfig = null;
+  let zcodeProbe = null;
+  let zcodeVerified = new Set();
   let editingDeps = "";
   let dispatchReport = null;
   let dshCapability = null;
@@ -232,6 +236,46 @@ magpie.plugin("orchestration", (ctx) => {
   }
 
 
+  function zcodeSettingsEditor() {
+    const form=el("form","orch-form");
+    form.append(el("b","",t("ZCode CLI setup")));
+    form.append(el("p","orch-safety",t("The standalone CLI is not ZCode Desktop. Plan mode is not an operating-system sandbox; do not supply production credentials.")));
+    const cli=field("ZCode CLI bundle path","D:\\tools\\zcode\\zcode.cjs",zcodeConfig?.executable||"");
+    form.append(cli.box);
+    if(zcodeProbe) {
+      const state=zcodeProbe.cliFound?t("ZCode plan CLI contract verified"):t("ZCode CLI check failed");
+      form.append(el("p","orch-capability",state+": "+(zcodeProbe.reason||"")));
+    }
+    const actions=el("div","orch-actions");
+    const save=button("Save ZCode CLI path",()=>{});
+    save.type="submit";save.onclick=null;
+    form.onsubmit=e=>{
+      e.preventDefault();
+      perform(async()=>{
+        zcodeConfig=await api("orchestration/agents/zcode/config",{executable:cli.input.value});
+        zcodeProbe=null;
+        zcodeVerified.clear();
+        status(t("ZCode CLI path saved"),"ok");
+      });
+    };
+    actions.append(save,button("Verify ZCode CLI",()=>perform(async()=>{
+      zcodeProbe=await api("orchestration/agents/zcode/probe",{confirm:true});
+      zcodeVerified.clear();
+      if(zcodeProbe.cliFound){
+        for(const task of tasks.filter(q=>["zcode","zcode cli","zcode-cli"].includes((q.agent||"").trim().toLowerCase()))){
+          try {
+            const evidence=await api("orchestration/tasks/"+encodeURIComponent(task.id)+"/zcode/verification");
+            if(evidence.verified) zcodeVerified.add(task.id);
+          } catch { /* Missing or unverified must never enable launch. */ }
+        }
+      }
+      status(zcodeProbe.reason,zcodeProbe.cliFound?"ok":"err");
+    })));
+    actions.append(button("Cancel",()=>{showingZCodeSetup=false;render();}));
+    form.append(actions);
+    return form;
+  }
+
   function dependencyEditor(task) {
     const form=el("form","orch-form");
     form.append(el("strong","",t("Select prerequisite tasks")));
@@ -309,6 +353,17 @@ magpie.plugin("orchestration", (ctx) => {
       showingCapabilities=opening;render();
     },"text"));
 
+    if(!web){
+      head.append(button("Configure ZCode CLI",async()=>{
+        if(!showingZCodeSetup){
+          try{zcodeConfig=await api("orchestration/agents/zcode/config");}
+          catch(e){status(e.message,"err");return;}
+        }
+        showingZCodeSetup=!showingZCodeSetup;
+        render();
+      },"text"));
+    }
+
     page.append(head);
 
     if(showingCapabilities){
@@ -326,6 +381,7 @@ magpie.plugin("orchestration", (ctx) => {
     }
 
     if (projectForm) page.append(projectEditor());
+    if(showingZCodeSetup && !web) page.append(zcodeSettingsEditor());
 
     const grid = el("div", "orch-grid");
     const left = el("section", "orch-section");
@@ -399,6 +455,7 @@ magpie.plugin("orchestration", (ctx) => {
         if (latestRun) {
           const summary = el("div", "orch-run-summary");
           summary.append(el("span", "", t("Latest agent run") + ": " + latestRun.state));
+          summary.append(el("span","",t("Agent adapter")+": "+latestRun.adapter));
           if(latestRun.sessionId) summary.append(el("span","",t("DSH session ID")+": "+latestRun.sessionId));
           if (latestRun.exitCode != null) summary.append(el("span", "", " · " + t("Agent exit code") + " " + latestRun.exitCode));
           if (latestRun.failure) summary.append(el("div", "orch-failure", latestRun.failure));
@@ -414,6 +471,20 @@ magpie.plugin("orchestration", (ctx) => {
             status(t("Agent process started"), "ok");
           })));
         }
+        const assigned=(q.agent||"").trim().toLowerCase();
+        if(["zcode","zcode cli","zcode-cli"].includes(assigned) && existing && q.status==="ready" && zcodeProbe?.cliFound){
+  actions.append(button("Verify ZCode task model",()=>perform(async()=>{
+    const check=await api("orchestration/tasks/"+encodeURIComponent(q.id)+"/zcode/verify",{revision:q.revision,confirm:true});
+    if(check.verified){zcodeVerified.add(q.id);status(t("ZCode task model verified"),"ok");}
+  })));
+}
+        if(["zcode","zcode cli","zcode-cli"].includes(assigned) && existing && q.status==="ready" && zcodeProbe?.cliFound && zcodeVerified.has(q.id)){
+          actions.append(button("Run ZCode analysis plan",()=>perform(async()=>{
+            await api("orchestration/tasks/"+encodeURIComponent(q.id)+"/plan-zcode",{revision:q.revision});
+            status(t("ZCode plan process started"),"ok");
+          })));
+        }
+
         if (latestRun) {
           actions.append(button("View agent log", () => perform(async () => {
             const log=await api("orchestration/runs/" + encodeURIComponent(latestRun.id) + "/log");

@@ -124,6 +124,137 @@ func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.S
 		}
 		return true
 	}
+	mux.HandleFunc("GET /api/orchestration/agents/zcode/config", func(rw http.ResponseWriter, r *http.Request) {
+		if !allowed(rw) {
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		cfg, err := s.GetZCodeCLI()
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, cfg)
+	})
+	mux.HandleFunc("POST /api/orchestration/agents/zcode/config", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Executable string `json:"executable"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		cfg, err := s.SetZCodeCLI(input.Executable)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, cfg)
+	})
+	mux.HandleFunc("POST /api/orchestration/agents/zcode/probe", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Confirm bool `json:"confirm"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		if !input.Confirm {
+			orchestrationFailure(rw, orchestration.ErrInvalid)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		cap, err := s.ProbeZCodeCLI()
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, cap)
+	})
+	mux.HandleFunc("GET /api/orchestration/tasks/{id}/zcode/verification", func(rw http.ResponseWriter, r *http.Request) {
+		if !allowed(rw) {
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		status, err := s.ZCodeVerificationStatus(r.PathValue("id"))
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, status)
+	})
+	mux.HandleFunc("POST /api/orchestration/tasks/{id}/zcode/verify", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Revision int64 `json:"revision"`
+			Confirm  bool  `json:"confirm"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		if !input.Confirm {
+			orchestrationFailure(rw, orchestration.ErrInvalid)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		status, err := s.VerifyZCodeModel(r.PathValue("id"), input.Revision)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, status)
+	})
+
+	mux.HandleFunc("POST /api/orchestration/tasks/{id}/plan-zcode", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Revision int64 `json:"revision"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		runner, ok := runService(rw)
+		if !ok {
+			return
+		}
+		run, err := runner.StartZCodePlan(r.PathValue("id"), input.Revision)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		rw.WriteHeader(http.StatusCreated)
+		writeJSON(rw, run)
+	})
+
 	mux.HandleFunc("GET /api/orchestration/agents/dsh", func(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, orchestration.DetectDSH())
 	})

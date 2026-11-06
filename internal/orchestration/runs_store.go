@@ -99,6 +99,13 @@ func (s *Store) reserveRun(t Task, revision int64, worktree string, source ...st
 	if len(source) > 0 {
 		resumeOf = source[0]
 	}
+	return s.reserveRunAdapter(t, revision, worktree, adapterDSH, resumeOf)
+}
+
+func (s *Store) reserveRunAdapter(t Task, revision int64, worktree, adapter, resumeOf string) (Run, error) {
+	if adapter != adapterDSH && adapter != "zcode-cli-plan" {
+		return Run{}, ErrInvalid
+	}
 	id, err := newID()
 	if err != nil {
 		return Run{}, err
@@ -119,7 +126,7 @@ func (s *Store) reserveRun(t Task, revision int64, worktree string, source ...st
 	if n != 1 {
 		return Run{}, ErrConflict
 	}
-	r := Run{ID: id, TaskID: t.ID, Adapter: adapterDSH, ResumeOf: resumeOf, State: "starting", WorktreePath: worktree, StartedAt: now()}
+	r := Run{ID: id, TaskID: t.ID, Adapter: adapter, ResumeOf: resumeOf, State: "starting", WorktreePath: worktree, StartedAt: now()}
 	_, err = tx.Exec("INSERT INTO agent_runs (id,task_id,adapter,resume_of,state,pid,worktree_path,started_at) VALUES(?,?,?,?,?,?,?,?)", r.ID, r.TaskID, r.Adapter, r.ResumeOf, r.State, 0, r.WorktreePath, r.StartedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
