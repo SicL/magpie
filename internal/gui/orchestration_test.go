@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -279,6 +280,10 @@ func TestOrchestrationDispatchAndDependenciesRejectCrossOrigin(t *testing.T) {
 	mountOrchestrationRoutes(mux, func() (*orchestration.Store, error) { return store, nil }, false)
 	for _, target := range []string{
 		"/api/orchestration/projects/foreign/dispatch",
+		"/api/orchestration/agents/zcode/config",
+		"/api/orchestration/agents/zcode/probe",
+		"/api/orchestration/tasks/foreign/plan-zcode",
+		"/api/orchestration/tasks/foreign/zcode/verify",
 		"/api/orchestration/tasks/foreign/dependencies",
 	} {
 		req := httptest.NewRequest("POST", target, bytes.NewBufferString("{\"maxRuns\":1}"))
@@ -289,6 +294,73 @@ func TestOrchestrationDispatchAndDependenciesRejectCrossOrigin(t *testing.T) {
 		mux.ServeHTTP(rr, req)
 		if rr.Code != http.StatusForbidden {
 			t.Fatalf("cross-site action allowed at %s: %d %s", target, rr.Code, rr.Body.String())
+		}
+	}
+}
+func TestZCodeCLIConfigureProbeAndGuard(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("Node is required for isolated ZCode CLI API fixture")
+	}
+	dir := t.TempDir()
+	store, err := orchestration.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	path := filepath.Join(dir, "zcode.cjs")
+	script := `const args=process.argv.slice(2);
+if(args.includes("--help")){console.log("--prompt --mode --cwd --output-format --disallowed-tools");process.exit(0);}
+if(args.includes("--version")){console.log("0.17.1-api-test");process.exit(0);}
+process.exit(7);`
+	if err = os.WriteFile(path, []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mountOrchestrationRoutes(mux, func() (*orchestration.Store, error) { return store, nil }, false)
+	code, body := orchestrationRequest(t, mux, "POST", "/api/orchestration/agents/zcode/config", map[string]any{"executable": path})
+	if code != http.StatusOK {
+		t.Fatalf("zcode configure: %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/agents/zcode/config", nil)
+	if code != http.StatusOK || !bytes.Contains(body, []byte("zcode.cjs")) {
+		t.Fatalf("saved profile: %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/agents/zcode/probe", map[string]any{"confirm": false})
+	if code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed probe %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/agents/zcode/probe", map[string]any{"confirm": true})
+	if code != http.StatusOK || !bytes.Contains(body, []byte("0.17.1-api-test")) {
+		t.Fatalf("probe failed %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/tasks/nonexistent/zcode/verification", nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("unrecognized task verification status %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/tasks/nonexistent/zcode/verify", map[string]any{"revision": 1, "confirm": false})
+	if code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed model probe %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/tasks/nonexistent/plan-zcode", map[string]any{"revision": 1})
+	if code != http.StatusNotFound {
+		t.Fatalf("unexpected unknown task plan result %d %s", code, body)
+	}
+	readOnly := http.NewServeMux()
+	mountOrchestrationRoutes(readOnly, func() (*orchestration.Store, error) { return store, nil }, true)
+	for _, tc := range []struct {
+		method, path string
+		body         any
+	}{
+		{"GET", "/api/orchestration/agents/zcode/config", nil},
+		{"POST", "/api/orchestration/agents/zcode/config", map[string]any{"executable": path}},
+		{"POST", "/api/orchestration/agents/zcode/probe", map[string]any{"confirm": true}},
+		{"POST", "/api/orchestration/tasks/nonexistent/plan-zcode", map[string]any{"revision": 1}},
+		{"GET", "/api/orchestration/tasks/nonexistent/zcode/verification", nil},
+		{"POST", "/api/orchestration/tasks/nonexistent/zcode/verify", map[string]any{"revision": 1, "confirm": true}},
+	} {
+		code, body = orchestrationRequest(t, readOnly, tc.method, tc.path, tc.body)
+		if code != http.StatusForbidden {
+			t.Fatalf("browser ZCode endpoint allowed %s %s: %d %s", tc.method, tc.path, code, body)
 		}
 	}
 }

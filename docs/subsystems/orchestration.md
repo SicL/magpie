@@ -229,3 +229,76 @@ P5 adds project-local task prerequisites and on-demand DSH dispatch.
 ### Verification boundary
 
 Tests check graph cycles, cross-project links, stale revisions, missing/passing/dirty checkpoints, Git ancestry, unresolved Runs, batch limits, APIs and browser controls. A human-marked passed checkpoint is not independently verified CI. WorkBuddy and ZCode automatic adapters remain future work after real CLI/auth/permission validation.
+
+## P6 ZCode CLI plan-mode adapter (opt-in)
+
+P6 introduces a separately configured ZCode Agent CLI analysis adapter. It
+does **not** authorize unattended ZCode code edits, CodeBuddy Code writes,
+or use of either desktop app's login/session data.
+
+### Distribution and setup
+
+- GTR source checkout used for verification: zai-org/ZCode at a9fe401.
+  Source is in D:\\magpie-p6-zcode-src, separate from the installed ZCode Desktop.
+- The standalone CLI can be built with the pinned Node/pnpm workspace toolchain.
+  The produced Node bundle is apps/zcode-cli/packages/cli/dist/zcode.cjs;
+  official single-executable builds are named zcode-windows-x64.exe.
+- Desktop UI provides Configure ZCode CLI. Only a user-selected absolute
+  existing zcode.cjs or the official Windows SEA filename is saved in
+  the local agent_cli_profiles table; paths outside that format are rejected.
+- Verify ZCode CLI is a separate user-triggered check of --help and
+  --version under a Magpie-owned isolated HOME. It checks arguments only;
+  it does not authenticate with a model or claim the model is ready.
+
+### Plan-mode execution
+
+- A task explicitly assigned ZCode or ZCode CLI, with ready status and
+  an isolated Git Worktree, is eligible only after a successful **explicit,
+  per-task live-model canary**. A successful --help/--version probe alone
+  cannot enable Run ZCode analysis plan.
+- Direct launch uses the same P3/P4 process-tree owner, durable Run ID,
+  revision gate, task dependency graph and log tail as DeepSeek Harness.
+- ZCode is invoked without a shell, with argv array and --mode plan,
+  --workflow-mode disabled, --disallowed-tools for Bash and file-edit tools,
+  --output-format stream-json and --cwd pointing to the registered Worktree.
+- Magpie creates a separate HOME, USERPROFILE, APPDATA, LOCALAPPDATA and
+  ZCODE_DATA_BASE_DIR per task under its local orchestration data dir.
+  The child receives a restricted process environment and does not inherit
+  arbitrary provider keys or the ZCode Desktop session.
+- A ZCode plan Run has adapter zcode-cli-plan and does not claim a DSH
+  session ID. The run's code changes are never automatically merged.
+- `--mode plan` is a tool-level permission mode, **not an OS sandbox**.
+  Plugins or MCP tools may have separate security rules. Do not put
+  credentials or private data in task prompts: the ZCode CLI currently
+  requires --prompt as an argv value, visible to local process inspection.
+- Users must independently configure/authenticate the task-specific
+  isolated ZCode CLI profile and explicitly click Verify ZCode task model.
+  The canary invokes a fixed non-secret prompt under the same task HOME
+  and requires a successful stream-json result event. A failed model call,
+  missing result or changed CLI binary fails closed. No responses or keys
+  are saved: SQLite records only task ID, CLI SHA-256 and verification time.
+  Verification expires after 15 minutes and must be repeated if the
+  executable changes, the clock moves backward or the task is unresolved.
+  The verified model result permits **plan-mode only**, not independent
+  CI acceptance, code modification or uncontrolled subprocess execution.
+  Canary processes use the same owned process-tree management with a
+  45-second timeout and terminate their children on timeout.
+
+### Other providers
+
+- WorkBuddy Desktop does not expose a verified headless process adapter.
+  Independent CodeBuddy Code CLI uses a separate install and authentication.
+  Official headless file editing can require a high-risk bypass of
+  permission prompts; Magpie never sets that bypass automatically.
+- The existing DSH explicit run and batch dispatch semantics are unchanged.
+  ZCode plan-mode Runs are not automatically included in DSH batch dispatch.
+
+### Verification
+
+Focused Go tests cover profile persistence/validation, provider probes,
+cross-origin and browser-only API guards, task ownership, run status,
+credential environment isolation, and shared DSH process regressions.
+Browser tests cover the configuration, independent CLI probe, per-task
+model verification and plan launch. Real CLI smoke under isolated HOME
+failed with no selected model, so authenticated execution remains UNVERIFIED.
+Full release acceptance is a separate gate.

@@ -74,6 +74,10 @@ func Open(file string) (*Store, error) {
 		}
 	}
 	s := &Store{db: db, dir: filepath.Dir(file)}
+	if err := s.ensureZCodeSchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize zcode config: %w", err)
+	}
 	if err := s.ensureRunSchema(); err != nil {
 		db.Close()
 		return nil, err

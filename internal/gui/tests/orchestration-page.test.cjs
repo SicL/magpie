@@ -83,6 +83,28 @@ function serve(lang, data) {
   if(url.pathname==="/api/orchestration/projects/p1/dispatch")
     return json({projectId:"p1",started:[],skipped:[]});
 
+  if(url.pathname==="/api/orchestration/agents/zcode/config"){
+    if(req.method()==="POST"){
+      data.zcodeConfig={executable:req.postDataJSON().executable,configured:true,mode:"plan"};
+    }
+    return json(data.zcodeConfig);
+  }
+  if(url.pathname==="/api/orchestration/agents/zcode/probe")
+    return json({id:"zcode-cli-plan",name:"ZCode CLI (plan mode)",cliFound:true,autoRunnable:true,version:"0.17.1-fixture",reason:"isolated CLI fixture verified"});
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/zcode/verification"){
+    return json({taskId:data.tasks[0].id,verified:data.zcodeVerified});
+  }
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/zcode/verify"){
+    data.zcodeVerified=true;
+    return json({taskId:data.tasks[0].id,verified:true,checkedAt:"2026-11-06T11:10:00Z"});
+  }
+
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/plan-zcode"){
+    const run={id:"zcode-test-run",taskId:data.tasks[0].id,adapter:"zcode-cli-plan",state:"running",worktreePath:data.worktrees[0].path};
+    data.runs.unshift(run);data.tasks[0].status="running";data.tasks[0].revision++;
+    return json(run,201);
+  }
+
   if(url.pathname==="/api/orchestration/agents/dsh") return json({adapter:"deepseek-harness",available:true,version:"fixture"});
   if(url.pathname==="/api/orchestration/runs") return json(data.runs);
   if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/status") {
@@ -120,7 +142,7 @@ for(const engine of ["chromium","webkit"]){
   t.after(()=>ctx.close());
   const page=await ctx.newPage();
   page.setDefaultTimeout(9000);
-  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],dependencies:[],copied:""};
+  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],dependencies:[],copied:"",zcodeConfig:{configured:false,mode:"plan",executable:""},zcodeVerified:false};
   await page.route("**/*",serve("zh",data));
   await page.goto("http://magpie.test/?view=orchestration");
   await page.locator("#view-orchestration .orch-head").waitFor({timeout:10000});
@@ -129,6 +151,15 @@ for(const engine of ["chromium","webkit"]){
   assert.match(await page.locator("#view-orchestration .orch-capabilities").innerText(),/ZCode Desktop/);
   assert.match(await page.locator("#view-orchestration .orch-capabilities").innerText(),/仅支持人工交接/);
   await page.locator("#view-orchestration").getByRole("button",{name:"Agent CLI 能力"}).click();
+  await page.locator("#view-orchestration").getByRole("button",{name:"配置 ZCode CLI"}).click();
+  await page.locator("#view-orchestration .orch-form").getByRole("textbox",{name:"ZCode CLI 文件路径"}).fill("C:\\tools\\zcode\\zcode.cjs");
+  await page.locator("#view-orchestration .orch-form").getByRole("button",{name:"保存 ZCode CLI 路径"}).click();
+  await page.waitForFunction(() => !document.querySelector("#view-orchestration")?.classList.contains("orch-busy"));
+  assert.equal(data.zcodeConfig.configured,true);
+  await page.locator("#view-orchestration .orch-form").getByRole("button",{name:"核验 ZCode CLI"}).click();
+  await page.locator("#view-orchestration").getByText(/ZCode CLI 计划模式参数核验通过/).waitFor();
+  await page.locator("#view-orchestration").getByRole("button",{name:"配置 ZCode CLI"}).click();
+
   await page.locator("#view-orchestration").getByRole("button",{name:"添加项目"}).click();
   const projectForm=page.locator("#view-orchestration .orch-form");
   await projectForm.getByRole("textbox",{name:"项目名称"}).fill("TMS Test");
@@ -188,6 +219,16 @@ for(const engine of ["chromium","webkit"]){
   assert.equal(data.recoveries.length,1);
   assert.equal(data.tasks[0].status,"blocked");
   await page.waitForFunction(() => !document.querySelector("#view-orchestration")?.classList.contains("orch-busy"));
+  data.tasks[0].agent="ZCode";data.tasks[0].status="ready";data.tasks[0].revision++;
+  data.runs[0].state="completed";
+  await page.locator("#view-orchestration .orch-head").getByRole("button",{name:"刷新任务状态"}).click();
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"核验 ZCode 任务模型"}).click();
+  await page.waitForFunction(() => !document.querySelector("#view-orchestration")?.classList.contains("orch-busy"));
+  assert.equal(data.zcodeVerified,true);
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"启动 ZCode 分析计划"}).click();
+  await page.waitForFunction(() => document.querySelector("#view-orchestration .orch-run-summary")?.textContent?.includes("zcode-cli-plan") || document.querySelector("#view-orchestration .orch-task")?.textContent?.includes("zcode-cli-plan"));
+  assert.equal(data.runs[0].adapter,"zcode-cli-plan");
+
   await page.setViewportSize({width:420,height:740});
   await page.locator("#view-orchestration").getByRole("button",{name:"派发就绪 DSH 任务"}).click();
   assert.match(await page.locator("#view-orchestration .orch-dispatch-report").innerText(),/DSH 派发结果/);
