@@ -22,7 +22,7 @@ func TestRenewLoginsKeepsSavedClaudeSignedIn(t *testing.T) {
 	claudeThree(t) // team@ and max@ saved, Claude Code on pro@
 	keepAliveClean(t)
 	var text atomic.Value
-	text.Store("Current week (all models): 1% used · resets Nov 6 at 11am (Asia/Dubai)")
+	text.Store("Current week (all models): 1% used · resets " + time.Now().Add(72*time.Hour).UTC().Format("Jan 2 at 3pm") + " (UTC)")
 	fakeClaudeUsage(t, &text, nil)
 	var mu sync.Mutex
 	var dirs []string
@@ -180,12 +180,13 @@ func TestRenewLoginsKeepsClaudeReading(t *testing.T) {
 	claudeThree(t)
 	keepAliveClean(t)
 	var text atomic.Value
-	text.Store(claudeWeeklyOnly)
+	weekly := strings.ReplaceAll(claudeWeeklyOnly, "Nov 6 at 11am (Asia/Dubai)", time.Now().Add(72*time.Hour).UTC().Format("Jan 2 at 3pm")+" (UTC)")
+	text.Store(weekly)
 	fakeClaudeUsage(t, &text, nil)
 	runs := atomic.Int32{}
 	UsageClaudeVia(func(_ context.Context, dir string) (string, error) {
 		runs.Add(1)
-		return strings.Replace(claudeWeeklyOnly, "(all models): 1%", "(all models): 37%", 1), nil
+		return strings.Replace(weekly, "(all models): 1%", "(all models): 37%", 1), nil
 	})
 	max := "max@x.com"
 	var l Login
