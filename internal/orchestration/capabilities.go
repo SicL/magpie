@@ -80,7 +80,7 @@ func AgentCapabilities() []AgentCapability {
 	caps = append(caps,
 		AgentCapability{ID: "workbuddy-desktop", Name: "WorkBuddy Desktop", Reason: "Manual handoff only; a supported desktop headless launcher is not verified"},
 		AgentCapability{ID: "zcode-desktop", Name: "ZCode Desktop", Reason: "Manual handoff only; desktop installation is not the independent ZCode CLI"},
-		probeHeadless("codebuddy-code-cli", "CodeBuddy Code CLI", []string{"codebuddy", "cbc"}, []string{"--print", "--allowedTools"}),
+		AgentCapability{ID: adapterCodeBuddyCLI, Name: "CodeBuddy Code CLI", Reason: "Configure the independent official npm CLI in Projects and verify it explicitly; manual handoff only"},
 		probeHeadless("zcode-cli", "ZCode Agent CLI", []string{"zcode"}, []string{"--prompt", "--mode", "--json"}),
 	)
 	return caps

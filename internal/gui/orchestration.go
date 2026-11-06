@@ -191,6 +191,70 @@ func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.S
 		writeJSON(rw, item)
 	})
 
+	mux.HandleFunc("GET /api/orchestration/agents/codebuddy/config", func(rw http.ResponseWriter, r *http.Request) {
+		if !allowed(rw) {
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		cfg, err := s.GetCodeBuddyCLI()
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, cfg)
+	})
+	mux.HandleFunc("POST /api/orchestration/agents/codebuddy/config", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Executable string `json:"executable"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		cfg, err := s.SetCodeBuddyCLI(input.Executable)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, cfg)
+	})
+	mux.HandleFunc("POST /api/orchestration/agents/codebuddy/probe", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Confirm bool `json:"confirm"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		if !input.Confirm {
+			orchestrationFailure(rw, orchestration.ErrInvalid)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		cap, err := s.ProbeCodeBuddyCLI()
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, cap)
+	})
+
 	mux.HandleFunc("GET /api/orchestration/agents/zcode/config", func(rw http.ResponseWriter, r *http.Request) {
 		if !allowed(rw) {
 			return
