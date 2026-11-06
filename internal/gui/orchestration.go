@@ -307,6 +307,84 @@ func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.S
 		writeJSON(rw, item)
 	})
 
+	mux.HandleFunc("GET /api/orchestration/agents/capabilities", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, orchestration.AgentCapabilities())
+	})
+	mux.HandleFunc("GET /api/orchestration/dependencies", func(rw http.ResponseWriter, r *http.Request) {
+		project := strings.TrimSpace(r.URL.Query().Get("project"))
+		if project == "" {
+			orchestrationFailure(rw, orchestration.ErrInvalid)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		items, err := s.ProjectDependencies(project)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, items)
+	})
+	mux.HandleFunc("GET /api/orchestration/tasks/{id}/readiness", func(rw http.ResponseWriter, r *http.Request) {
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		result, err := s.TaskReadiness(r.PathValue("id"))
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, result)
+	})
+	mux.HandleFunc("POST /api/orchestration/tasks/{id}/dependencies", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Revision        int64    `json:"revision"`
+			PrerequisiteIDs []string `json:"prerequisiteIds"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		updated, err := s.ReplaceDependencies(r.PathValue("id"), input.Revision, input.PrerequisiteIDs)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, updated)
+	})
+	mux.HandleFunc("POST /api/orchestration/projects/{id}/dispatch", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			MaxRuns int `json:"maxRuns"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		runner, ok := runService(rw)
+		if !ok {
+			return
+		}
+		result, err := runner.DispatchReady(r.PathValue("id"), input.MaxRuns)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, result)
+	})
+
 	mux.HandleFunc("GET /api/orchestration/projects", func(rw http.ResponseWriter, r *http.Request) {
 		s, ok := db(rw)
 		if !ok {

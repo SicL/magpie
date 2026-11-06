@@ -270,6 +270,9 @@ func (r *RunService) start(taskID string, revision int64, sourceRunID string) (R
 	if err != nil {
 		return Run{}, err
 	}
+	if err = r.store.CheckDependenciesForLaunch(t, cwd); err != nil {
+		return Run{}, err
+	}
 	var source Run
 	if sourceRunID != "" {
 		source, err = r.store.resumeSource(taskID, sourceRunID, cwd)

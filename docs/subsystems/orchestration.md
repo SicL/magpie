@@ -195,3 +195,37 @@ app is not verified. For now, WorkBuddy/ZCode use manual handoff only.
 
 All new mutating P4 routes require the existing desktop JSON and
 cross-origin controls; browser mode remains read-only.
+
+## P5 Agent capability and explicit dependency dispatch
+
+P5 adds project-local task prerequisites and on-demand DSH dispatch.
+**It does not introduce an unattended cross-provider scheduler.**
+
+### Provider capability registry
+
+- GET /api/orchestration/agents/capabilities distinguishes independently installed CLIs from desktop apps and proven execution-ready adapters.
+- Only verified DSH headless JSON mode can auto-execute after explicit desktop authorization.
+- Installed desktop WorkBuddy/ZCode are manual handoff integrations. Independent CodeBuddy Code CLI and ZCode Agent CLI may be detected through Windows CLI shims, but presence never means credentials or permissions were verified.
+- CodeBuddy Code's official headless write mode may require a dangerously skipped permission prompt; Magpie never enables that flag or guesses at a sandbox bypass.
+- Detection does not invoke a model or launch any coding task.
+
+### Prerequisite graph and Git integration gate
+
+- POST /api/orchestration/tasks/{id}/dependencies replaces prerequisiteIds with task revision CAS in one transaction; GET /api/orchestration/dependencies?project={id} lists project edges.
+- Max 32 prerequisites; self edges, duplicates, cycles, cross-project links, stale revisions and edits to active/review/done task records are rejected. Unresolved Agent Runs prevent graph edits.
+- GET /api/orchestration/tasks/{id}/readiness previews launch readiness.
+- A downstream task can launch only when each prerequisite is marked done, has no active/unresolved Run, has a clean and self-reported passed checkpoint, still has the same clean Git HEAD, and that exact tested commit is an ancestor of the downstream Worktree HEAD.
+- These conditions are rechecked by direct Start/Resume and batch dispatch. Git verification is limited to 25 seconds overall.
+- Magpie does not merge or cherry-pick commits. Merely copying a summary is not code integration; cherry-picked changes with a different commit hash do not satisfy ancestry.
+
+### On-demand batch dispatch
+
+- POST /api/orchestration/projects/{id}/dispatch with maxRuns 1-3 explicitly starts only ready DSH tasks, each using a separate Worktree and normal revision/Run lease protections.
+- Other Agent assignments and blocked/unintegrated tasks remain unchanged and appear in the skipped list with a reason.
+- No automatic launch occurs on task completion, checkpoint creation, or status change. All batch starts require an explicit desktop click.
+- Web/browser mode cannot mutate graph or dispatch processes; both routes use the existing desktop JSON and cross-origin safeguards.
+- UI includes prerequisite editor, task readiness action, provider capability matrix and batch result.
+
+### Verification boundary
+
+Tests check graph cycles, cross-project links, stale revisions, missing/passing/dirty checkpoints, Git ancestry, unresolved Runs, batch limits, APIs and browser controls. A human-marked passed checkpoint is not independently verified CI. WorkBuddy and ZCode automatic adapters remain future work after real CLI/auth/permission validation.
