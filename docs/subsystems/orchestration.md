@@ -441,3 +441,77 @@ capability help/version, and failure on missing flags. Desktop API
 tests exercise confirmation and Web/cross-origin access guards.
 Chromium and WebKit check the CodeBuddy setup/probe panel while
 asserting no Run is started by probing.
+
+## P10: isolated no-tools model diagnostic and Git handoff receipts
+
+P10 extends the independent CodeBuddy CLI integration without opening
+unattended code execution. An explicit desktop-only
+`POST /api/orchestration/agents/codebuddy/model/check` with
+`{confirm:true}` invokes a fixed, public canary prompt in a newly
+created empty temporary directory and an isolated HOME/USERPROFILE/
+APPDATA/TEMP environment. It never reads the registered project Worktree
+or forwards Desktop credentials. The CLI is started in `--print` mode
+with `--permission-mode plan`, `--tools ""`, strict empty MCP
+configuration, `--no-session-persistence`, `--max-turns 1` and JSON
+output. Required flags are validated using its live `--help`.
+The owned process tree has a 28-second total deadline, bounded output,
+and is stopped if the deadline expires. Only enumerated status values
+are returned: `unconfigured`, `cli_unavailable`,
+`unsafe_cli_contract`, `unverified`, `timed_out` or `model_replied`.
+Full CLI responses and potential provider details are never returned
+to the browser or saved in the database.
+
+**Important:** even `model_replied` only means the process returned a
+matching JSON result. It neither authenticates a particular account
+nor proves model quality or OS sandboxing. It does not write a Run,
+modify a task, or authorize tools, merges or unattended coding.
+The GTR workstation had no Docker/Podman command available at P10
+inspection; Plan mode and an empty workspace are not OS isolation.
+Do not use untrusted project prompts or private data with this probe.
+
+### Human Git handoff snapshot and acknowledgment
+
+- `GET /api/orchestration/tasks/{id}/handoff` generates an on-demand
+  read-only snapshot from the **current** registered Worktree HEAD,
+  clean/dirty Git status, task version/assigned Agent, and prerequisite
+  task checkpoints. It uses the existing readiness gate: all
+  predecessors must be completed, have a latest user-reported passed
+  checkpoint in a clean Worktree and their exact tested commits
+  must be ancestors of the destination Worktree HEAD.
+- The snapshot receives a SHA-256 fingerprint covering the task
+  revision, assigned Agent, current Git HEAD, readiness/clean status,
+  and exact latest predecessor checkpoint identity/summary/commit.
+  This checksum is **not** a signature, build attestation, CI result
+  or durable permission to execute an Agent.
+- `POST /api/orchestration/tasks/{id}/handoffs` requires an explicit
+  desktop acknowledgment with the task revision and fingerprint.
+  The backend recomputes a fresh Git snapshot and rejects stale
+  hashes, dirty/blocked Worktrees, unresolved Runs, unintegrated
+  dependencies, invalid statuses and repeated acknowledgments.
+  An append-only receipt contains the recipient derived from the
+  assigned Agent (DeepSeek Harness, ZCode, CodeBuddy Code, or
+  WorkBuddy Desktop), Git head, fingerprint and timestamp.
+- `GET /api/orchestration/tasks/{id}/handoffs` retrieves the receipts.
+  History is local to Magpie's private orchestration SQLite DB;
+  a task with receipts cannot be silently deleted. No Git branch
+  or Worktree is created, merged, reset or removed by these APIs.
+- All three endpoints are desktop-only; POST requires same-origin
+  JSON and explicit confirmation. The Projects page previews blockers,
+  allows human acknowledgment only for a ready snapshot, adds the
+  fingerprint to the copied handoff information, and shows receipts
+  alongside earlier checkpoint and recovery records.
+- Tests use disposable Git repositories to simulate DSH → ZCode →
+  CodeBuddy handoff with a real commit per predecessor, user-reported
+  test checkpoint and explicit `git merge --ff-only`. They also cover
+  stale Git HEADs, dirty Worktrees, cross-task fingerprints, missing
+  checks, duplicate receipts and Web/cross-site permission guards.
+
+### P10 incomplete gates
+
+On GTR, the actual official CodeBuddy Code CLI 2.180.0 was invoked with
+the fixed no-tools prompt and an isolated HOME. The result was
+`unverified`; no authenticated model reply was proven. This is not
+an invitation to copy Desktop credentials or to bypass permissions.
+Independent CI, full Go and browser suites, manual WebView2 testing,
+OS sandboxing, authenticated coding and fully automated three-Agent
+execution remain outside P10 acceptance.

@@ -531,3 +531,117 @@ process.exit(7);`
 		t.Fatalf("cross-site changed CodeBuddy config %d", rw.Code)
 	}
 }
+
+func TestCodeBuddyModelProbeExplicitDesktopOnly(t *testing.T) {
+	s, err := orchestration.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	path := "/api/orchestration/agents/codebuddy/model/check"
+	mux := http.NewServeMux()
+	mountOrchestrationRoutes(mux, func() (*orchestration.Store, error) { return s, nil }, false)
+	code, body := orchestrationRequest(t, mux, "POST", path, map[string]any{"confirm": false})
+	if code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed model check %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", path, map[string]any{"confirm": true})
+	if code != http.StatusOK || !bytes.Contains(body, []byte(`"status":"unconfigured"`)) {
+		t.Fatalf("without CLI config should not probe model %d %s", code, body)
+	}
+	webOnly := http.NewServeMux()
+	mountOrchestrationRoutes(webOnly, func() (*orchestration.Store, error) { return s, nil }, true)
+	code, body = orchestrationRequest(t, webOnly, "POST", path, map[string]any{"confirm": true})
+	if code != http.StatusForbidden {
+		t.Fatalf("web accessed model check %d %s", code, body)
+	}
+	req := httptest.NewRequest("POST", path, bytes.NewBufferString(`{"confirm":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://untrusted.example")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != http.StatusForbidden {
+		t.Fatalf("cross-site triggered model check %d", rw.Code)
+	}
+}
+
+func TestGitHandoffPreviewReceiptAndDesktopGuards(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	for _, args := range [][]string{
+		{"init", "-b", "main", repo},
+		{"-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial"},
+	} {
+		if out, err := proc.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	s, err := orchestration.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	p, err := s.CreateProject(orchestration.Project{Name: "fixture", RepoPath: repo, WorktreeRoot: filepath.Join(t.TempDir(), "worktrees")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.CreateTask(orchestration.Task{ProjectID: p.ID, Title: "ZCode reviewer", Agent: "ZCode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.CreateWorktree(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	task, err = s.SetTaskStatus(task.ID, task.Revision, "ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mountOrchestrationRoutes(mux, func() (*orchestration.Store, error) { return s, nil }, false)
+	path := "/api/orchestration/tasks/" + task.ID + "/handoff"
+	code, body := orchestrationRequest(t, mux, "GET", path, nil)
+	var snapshot orchestration.HandoffPreview
+	if code != http.StatusOK || json.Unmarshal(body, &snapshot) != nil || !snapshot.Ready {
+		t.Fatalf("handoff preview %d %+v %s", code, snapshot, body)
+	}
+	receiptsPath := "/api/orchestration/tasks/" + task.ID + "/handoffs"
+	code, body = orchestrationRequest(t, mux, "POST", receiptsPath, map[string]any{"revision": snapshot.Revision, "fingerprint": snapshot.Fingerprint, "confirm": false})
+	if code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed handoff accepted %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", receiptsPath, map[string]any{"revision": snapshot.Revision, "fingerprint": "a" + snapshot.Fingerprint[1:], "confirm": true})
+	if code != http.StatusConflict {
+		t.Fatalf("stale handoff hash accepted %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", receiptsPath, map[string]any{"revision": snapshot.Revision, "fingerprint": snapshot.Fingerprint, "confirm": true})
+	if code != http.StatusCreated {
+		t.Fatalf("valid handoff not recorded %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "GET", receiptsPath, nil)
+	if code != http.StatusOK || !bytes.Contains(body, []byte(snapshot.Fingerprint)) {
+		t.Fatalf("handoff not persisted %d %s", code, body)
+	}
+	browser := http.NewServeMux()
+	mountOrchestrationRoutes(browser, func() (*orchestration.Store, error) { return s, nil }, true)
+	for _, tc := range []struct {
+		method, path string
+		payload      any
+	}{
+		{"GET", path, nil}, {"GET", receiptsPath, nil},
+		{"POST", receiptsPath, map[string]any{"revision": snapshot.Revision, "fingerprint": snapshot.Fingerprint, "confirm": true}},
+	} {
+		code, body = orchestrationRequest(t, browser, tc.method, tc.path, tc.payload)
+		if code != http.StatusForbidden {
+			t.Fatalf("web accessed handoff %s %d %s", tc.method, code, body)
+		}
+	}
+	req := httptest.NewRequest("POST", receiptsPath, bytes.NewBufferString(`{"confirm":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://untrusted.example")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != http.StatusForbidden {
+		t.Fatalf("cross-site handoff write allowed %d", rw.Code)
+	}
+}

@@ -191,6 +191,33 @@ func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.S
 		writeJSON(rw, item)
 	})
 
+	mux.HandleFunc("POST /api/orchestration/agents/codebuddy/model/check", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Confirm bool `json:"confirm"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		if !input.Confirm {
+			orchestrationFailure(rw, orchestration.ErrInvalid)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		result, err := s.ProbeCodeBuddyModel()
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, result)
+	})
+
 	mux.HandleFunc("GET /api/orchestration/agents/codebuddy/config", func(rw http.ResponseWriter, r *http.Request) {
 		if !allowed(rw) {
 			return
@@ -589,6 +616,67 @@ func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.S
 		}
 		writeJSON(rw, items)
 	})
+
+	mux.HandleFunc("GET /api/orchestration/tasks/{id}/handoff", func(rw http.ResponseWriter, r *http.Request) {
+		if !allowed(rw) {
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		snapshot, err := s.PreviewHandoff(r.PathValue("id"))
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, snapshot)
+	})
+	mux.HandleFunc("GET /api/orchestration/tasks/{id}/handoffs", func(rw http.ResponseWriter, r *http.Request) {
+		if !allowed(rw) {
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		rows, err := s.HandoffReceipts(r.PathValue("id"))
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, rows)
+	})
+	mux.HandleFunc("POST /api/orchestration/tasks/{id}/handoffs", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Confirm     bool   `json:"confirm"`
+			Revision    int64  `json:"revision"`
+			Fingerprint string `json:"fingerprint"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		if !input.Confirm {
+			orchestrationFailure(rw, orchestration.ErrInvalid)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		record, err := s.AcknowledgeHandoff(r.PathValue("id"), input.Revision, input.Fingerprint)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		rw.WriteHeader(http.StatusCreated)
+		writeJSON(rw, record)
+	})
+
 	mux.HandleFunc("GET /api/orchestration/tasks/{id}/readiness", func(rw http.ResponseWriter, r *http.Request) {
 		s, ok := db(rw)
 		if !ok {

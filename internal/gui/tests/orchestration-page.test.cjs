@@ -35,6 +35,23 @@ function serve(lang, data) {
   }
 
   if(url.pathname==="/api/copy"){data.copied=req.postDataJSON().text;return json({ok:true});}
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/handoff"){
+    return json({taskId:data.tasks[0].id,revision:data.tasks[0].revision,agent:data.tasks[0].agent,
+      ready:data.tasks[0].status==="ready",clean:true,gitHead:"f".repeat(40),
+      fingerprint:"a".repeat(64),prerequisites:[],
+      reason:data.tasks[0].status==="ready"?"":"task is not ready"});
+  }
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/handoffs"){
+    if(req.method()==="POST"){
+      const payload=req.postDataJSON();
+      if(!payload.confirm)return json({error:"confirmation required"},400);
+      data.handoffReceipts.push({id:"receipt-fixture-001",taskId:data.tasks[0].id,
+        recipient:data.tasks[0].agent,revision:payload.revision,gitHead:"f".repeat(40),
+        fingerprint:payload.fingerprint,createdAt:"2026-11-06T10:00:00Z"});
+      return json(data.handoffReceipts[data.handoffReceipts.length-1],201);
+    }
+    return json(data.handoffReceipts);
+  }
   if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/checkpoints"){
    if(req.method()==="POST"){
     const v=req.postDataJSON();
@@ -100,6 +117,10 @@ function serve(lang, data) {
       data.codeBuddyConfig={executable:req.postDataJSON().executable,configured:true,mode:"manual-handoff"};
     return json(data.codeBuddyConfig);
   }
+  if(url.pathname==="/api/orchestration/agents/codebuddy/model/check"){
+    data.codeBuddyModelChecked=true;
+    return json({configured:true,cliReady:true,modelReplied:false,status:"unverified"});
+  }
   if(url.pathname==="/api/orchestration/agents/codebuddy/probe"){
     data.codeBuddyProbed=true;
     return json({id:"codebuddy-code-cli",name:"CodeBuddy Code CLI",cliFound:true,
@@ -164,7 +185,7 @@ for(const engine of ["chromium","webkit"]){
   t.after(()=>ctx.close());
   const page=await ctx.newPage();
   page.setDefaultTimeout(9000);
-  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],dependencies:[],copied:"",zcodeConfig:{configured:false,mode:"plan",executable:""},codeBuddyConfig:{configured:false,mode:"manual-handoff",executable:""},codeBuddyProbed:false,zcodeLocalModel:{configured:false},zcodeVerified:false};
+  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],dependencies:[],handoffReceipts:[],copied:"",zcodeConfig:{configured:false,mode:"plan",executable:""},codeBuddyConfig:{configured:false,mode:"manual-handoff",executable:""},codeBuddyProbed:false,codeBuddyModelChecked:false,zcodeLocalModel:{configured:false},zcodeVerified:false};
   await page.route("**/*",serve("zh",data));
   await page.goto("http://magpie.test/?view=orchestration");
   await page.locator("#view-orchestration .orch-head").waitFor({timeout:10000});
@@ -199,6 +220,10 @@ for(const engine of ["chromium","webkit"]){
   await page.locator("#view-orchestration .orch-form").getByRole("button",{name:"核验 CodeBuddy CLI"}).click();
   await page.locator("#view-orchestration").getByText(/CodeBuddy CLI 参数核验通过/).waitFor();
   assert.equal(data.codeBuddyProbed,true);
+  await page.locator("#view-orchestration .orch-form").getByRole("button",{name:"核验 CodeBuddy 隔离模型"}).click();
+  await page.locator("#view-orchestration").getByText(/CodeBuddy 隔离模型回复未通过核验/).first().waitFor();
+  assert.equal(data.codeBuddyModelChecked,true);
+  assert.equal(data.runs.length,0,"failed model check must not start a CodeBuddy Run");
   assert.equal(data.runs.length,0,"CLI probe must not auto-start a task");
   await page.locator("#view-orchestration").getByRole("button",{name:"配置 CodeBuddy CLI"}).click();
   await page.locator("#view-orchestration").getByRole("button",{name:"添加项目"}).click();
@@ -235,6 +260,10 @@ for(const engine of ["chromium","webkit"]){
   ]);
   assert.match(data.copied,/Worktree \(task-scoped\)/);
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"标记就绪"}).click();
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"核查 Git 交接"}).click();
+  await page.locator("#view-orchestration .orch-task").getByText(/已核验的 Git 交接预览/).waitFor();
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"确认 Git 交接快照"}).click();
+  assert.equal(data.handoffReceipts.length,1);
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"检查调度条件"}).click();
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"启动 DeepSeek Harness"}).click();
   await page.locator("#view-orchestration .orch-run-summary").waitFor();
@@ -247,7 +276,7 @@ for(const engine of ["chromium","webkit"]){
   data.tasks[0].status="review";data.tasks[0].revision++;
   await page.locator("#view-orchestration .orch-head").getByRole("button",{name:"刷新任务状态"}).click();
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"标记就绪"}).click();
-  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"检查调度条件"}).click();
+await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"检查调度条件"}).click();
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"续接 DSH 会话"}).click();
   assert.equal(data.runs.length,2);
   assert.equal(data.runs[0].resumeOf,data.runs[1].id);
