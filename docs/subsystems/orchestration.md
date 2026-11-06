@@ -356,3 +356,44 @@ other agents' login state or expose a remote API key store.
 - No OS process sandbox, no unattended editing/merging, and no
   authenticated remote/third-party provider integration are provided.
   DSH and WorkBuddy behavior remains unchanged.
+
+## P8: explicit local model server readiness
+
+A configured model ID is not proof that an inference server is listening.
+P8 adds an explicit **Check local model server** action alongside the
+existing loopback URL and model ID editor. The action is diagnostic only
+and does not authenticate a model, authorize a ZCode Run or start a server.
+
+- The desktop-only, same-origin guarded POST
+  `/api/orchestration/agents/zcode/local-model/check` requires a JSON
+  `{confirm:true}` request. Web mode and cross-site requests are rejected.
+- The implementation in `internal/orchestration/zcode_readiness.go`
+  resolves the already saved/validated model selection and requests only
+  `GET /v1/models` from exact `127.0.0.1` or `[::1]` with an explicit port.
+  Proxy support, redirects and alternate network hosts are disabled.
+- Each request has a 3-second overall deadline, a response-header
+  deadline, no keep-alive, and a 64 KiB response-size limit. Responses
+  must contain a JSON `data` model array. Matching requires exact
+  `id` equality; no streamed model output, credentials, or third-party
+  network services are needed.
+- Result fields `configured`, `reachable`, `modelFound`,
+  `availableModels`, and `status` distinguish `unconfigured`,
+  `unreachable`, `unexpected_response`, `model_missing`, and `ready`.
+  Raw HTTP response bodies or arbitrary server strings are never
+  displayed to the user or persisted.
+- Successful readiness checks **do not** insert records into
+  `zcode_plan_verifications`; the P6/P7 task-specific, expiry-bound
+  live model canary remains mandatory before every plan-mode run.
+- The installed WorkBuddy/WorkBuddyAI desktop runtime is not
+  automatically treated as CodeBuddy Code's independently authenticated
+  headless CLI. P8 does not alter the existing conservative Agent
+  Capabilities behavior or enable noninteractive permission bypass.
+
+### Local readiness regression verification
+
+`go test -tags nogui ./internal/orchestration ./internal/gui -run
+'TestZCodeLocalReadiness|TestZCodeReadinessDesktopOnly'` exercises
+success, exact model mismatch, malformed/missing JSON, oversized bodies,
+server errors, rejection of redirects and proxies, Web/cross-site API
+guards, and confirmation that readiness is not a model-canary record.
+The Projects UI workflow is checked in both Chromium and WebKit.

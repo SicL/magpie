@@ -408,3 +408,52 @@ func TestZCodeLocalModelRoutesAndBrowserGuards(t *testing.T) {
 		t.Fatalf("cross-site model config accepted %d", recorder.Code)
 	}
 }
+
+func TestZCodeReadinessDesktopOnlyAndConfirmation(t *testing.T) {
+	s, err := orchestration.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	route := "/api/orchestration/agents/zcode/local-model/check"
+	api := http.NewServeMux()
+	mountOrchestrationRoutes(api, func() (*orchestration.Store, error) { return s, nil }, false)
+	status, body := orchestrationRequest(t, api, "POST", route, map[string]any{"confirm": false})
+	if status != http.StatusBadRequest {
+		t.Fatalf("unconfirmed local model probe %d %s", status, body)
+	}
+	status, body = orchestrationRequest(t, api, "POST", route, map[string]any{"confirm": true})
+	if status != http.StatusOK || !bytes.Contains(body, []byte("unconfigured")) {
+		t.Fatalf("no model probe %+v %s", status, body)
+	}
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("unexpected model route %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qwen3-local"}]}`))
+	}))
+	defer modelServer.Close()
+	if _, err = s.SetZCodeLocalModel(modelServer.URL+"/v1", "qwen3-local"); err != nil {
+		t.Fatal(err)
+	}
+	status, body = orchestrationRequest(t, api, "POST", route, map[string]any{"confirm": true})
+	if status != http.StatusOK || !bytes.Contains(body, []byte(`"modelFound":true`)) {
+		t.Fatalf("local model probe status %d %s", status, body)
+	}
+	webOnly := http.NewServeMux()
+	mountOrchestrationRoutes(webOnly, func() (*orchestration.Store, error) { return s, nil }, true)
+	status, body = orchestrationRequest(t, webOnly, "POST", route, map[string]any{"confirm": true})
+	if status != http.StatusForbidden {
+		t.Fatalf("browser mode triggered network probe %d %s", status, body)
+	}
+	req := httptest.NewRequest("POST", route, bytes.NewReader([]byte(`{"confirm":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://untrusted.example")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rw := httptest.NewRecorder()
+	api.ServeHTTP(rw, req)
+	if rw.Code != http.StatusForbidden {
+		t.Fatalf("cross-site triggered network probe %d", rw.Code)
+	}
+}
