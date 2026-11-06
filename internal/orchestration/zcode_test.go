@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+func canonicalZCodeTestPath(t *testing.T, path string) string {
+	t.Helper()
+	result, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
 func createFakeZCode(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("node"); err != nil {
@@ -59,7 +67,7 @@ func TestZCodePlanHasDedicatedRunAndCredentialFreeEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !conf.Configured || conf.Executable != zcode {
+	if !conf.Configured || conf.Executable != canonicalZCodeTestPath(t, zcode) {
 		t.Fatalf("CLI config %+v", conf)
 	}
 	cap, err := store.ProbeZCodeCLI()
@@ -141,7 +149,7 @@ func TestZCodeCLIPathPersistence(t *testing.T) {
 	}
 	defer s.Close()
 	cfg, err := s.GetZCodeCLI()
-	if err != nil || cfg.Executable != exe || !cfg.Configured || cfg.Mode != "plan" {
+	if err != nil || cfg.Executable != canonicalZCodeTestPath(t, exe) || !cfg.Configured || cfg.Mode != "plan" {
 		t.Fatalf("profile not persisted: %+v %v", cfg, err)
 	}
 }
