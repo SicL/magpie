@@ -140,6 +140,47 @@ func TestOrchestrationAPIProjectsAndTasks(t *testing.T) {
 	if err = json.Unmarshal(body, &tasks); err != nil || len(tasks) != 1 || tasks[0].Status != "ready" {
 		t.Fatalf("tasks %+v %v", tasks, err)
 	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/tasks", map[string]string{
+		"projectId": project.ID, "title": "Legacy prerequisite", "agent": "WorkBuddy",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create prerequisite task %d %s", code, body)
+	}
+	var predecessor orchestration.Task
+	if err = json.Unmarshal(body, &predecessor); err != nil {
+		t.Fatal(err)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/tasks/"+task.ID+"/dependencies", map[string]any{
+		"revision": tasks[0].Revision, "prerequisiteIds": []string{predecessor.ID},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("set prerequisites %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/dependencies?project="+project.ID, nil)
+	if code != http.StatusOK {
+		t.Fatalf("list project dependencies %d %s", code, body)
+	}
+	var edges []orchestration.Dependency
+	if err = json.Unmarshal(body, &edges); err != nil || len(edges) != 1 || edges[0].PrerequisiteID != predecessor.ID {
+		t.Fatalf("dependency API returned %+v %v", edges, err)
+	}
+	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/tasks/"+task.ID+"/readiness", nil)
+	if code != http.StatusOK {
+		t.Fatalf("readiness API %d %s", code, body)
+	}
+	var ready orchestration.Readiness
+	if err = json.Unmarshal(body, &ready); err != nil || ready.Ready {
+		t.Fatalf("unmet prerequisite allowed %+v %v", ready, err)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/projects/"+project.ID+"/dispatch", map[string]any{"maxRuns": 1})
+	if code != http.StatusOK {
+		t.Fatalf("dispatch API %d %s", code, body)
+	}
+	var report orchestration.DispatchReport
+	if err = json.Unmarshal(body, &report); err != nil || len(report.Started) != 0 || len(report.Skipped) != 1 {
+		t.Fatalf("manual-only dispatch must skip %+v %v", report, err)
+	}
+
 }
 
 func TestOrchestrationReadOnlyWebBlocksWrites(t *testing.T) {
@@ -179,6 +220,16 @@ func TestOrchestrationReadOnlyWebBlocksWrites(t *testing.T) {
 	if code != http.StatusForbidden {
 		t.Fatalf("browser reconciled agent %d %s", code, body)
 	}
+
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/tasks/fake/dependencies", map[string]any{"revision": 1, "prerequisiteIds": []string{}})
+	if code != http.StatusForbidden {
+		t.Fatalf("browser edited prerequisite graph %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/projects/fake/dispatch", map[string]any{"maxRuns": 1})
+	if code != http.StatusForbidden {
+		t.Fatalf("browser launched batch dispatch %d %s", code, body)
+	}
+
 	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/projects", nil)
 	if code != http.StatusOK || string(bytes.TrimSpace(body)) != "[]" {
 		t.Fatalf("web list %d %s", code, body)
@@ -215,5 +266,29 @@ func TestOrchestrationCrossOriginCannotExecuteAgents(t *testing.T) {
 				t.Fatalf("request permitted: %d %s", rr.Code, rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestOrchestrationDispatchAndDependenciesRejectCrossOrigin(t *testing.T) {
+	store, err := orchestration.Open(filepath.Join(t.TempDir(), "project.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	mux := http.NewServeMux()
+	mountOrchestrationRoutes(mux, func() (*orchestration.Store, error) { return store, nil }, false)
+	for _, target := range []string{
+		"/api/orchestration/projects/foreign/dispatch",
+		"/api/orchestration/tasks/foreign/dependencies",
+	} {
+		req := httptest.NewRequest("POST", target, bytes.NewBufferString("{\"maxRuns\":1}"))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "https://outside.example")
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("cross-site action allowed at %s: %d %s", target, rr.Code, rr.Body.String())
+		}
 	}
 }

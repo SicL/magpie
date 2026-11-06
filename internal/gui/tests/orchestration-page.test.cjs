@@ -63,6 +63,26 @@ function serve(lang, data) {
    return json(rec);
   }
 
+
+  if(url.pathname==="/api/orchestration/agents/capabilities") return json([
+    {id:"deepseek-harness",name:"DeepSeek Harness",cliFound:true,autoRunnable:true,version:"test",reason:"verified fixture"},
+    {id:"workbuddy-desktop",name:"WorkBuddy Desktop",cliFound:false,autoRunnable:false,reason:"manual handoff"},
+    {id:"zcode-desktop",name:"ZCode Desktop",cliFound:false,autoRunnable:false,reason:"manual handoff"},
+    {id:"codebuddy-code-cli",name:"CodeBuddy Code CLI",cliFound:false,autoRunnable:false,reason:"not installed"},
+    {id:"zcode-cli",name:"ZCode Agent CLI",cliFound:false,autoRunnable:false,reason:"not installed"}
+  ]);
+  if(url.pathname==="/api/orchestration/dependencies") return json(data.dependencies);
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/dependencies") {
+    const v=req.postDataJSON();
+    data.dependencies=v.prerequisiteIds.map(prerequisiteId=>({taskId:data.tasks[0].id,prerequisiteId}));
+    data.tasks[0].revision++;
+    return json(data.tasks[0]);
+  }
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/readiness")
+    return json({taskId:data.tasks[0].id,ready:data.tasks[0].status==="ready",prerequisites:0});
+  if(url.pathname==="/api/orchestration/projects/p1/dispatch")
+    return json({projectId:"p1",started:[],skipped:[]});
+
   if(url.pathname==="/api/orchestration/agents/dsh") return json({adapter:"deepseek-harness",available:true,version:"fixture"});
   if(url.pathname==="/api/orchestration/runs") return json(data.runs);
   if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/status") {
@@ -100,11 +120,15 @@ for(const engine of ["chromium","webkit"]){
   t.after(()=>ctx.close());
   const page=await ctx.newPage();
   page.setDefaultTimeout(9000);
-  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],copied:""};
+  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],dependencies:[],copied:""};
   await page.route("**/*",serve("zh",data));
   await page.goto("http://magpie.test/?view=orchestration");
   await page.locator("#view-orchestration .orch-head").waitFor({timeout:10000});
   assert.match(await page.locator("#view-orchestration .orch-intro").innerText(),/项目与任务/);
+  await page.locator("#view-orchestration").getByRole("button",{name:"Agent CLI 能力"}).click();
+  assert.match(await page.locator("#view-orchestration .orch-capabilities").innerText(),/ZCode Desktop/);
+  assert.match(await page.locator("#view-orchestration .orch-capabilities").innerText(),/仅支持人工交接/);
+  await page.locator("#view-orchestration").getByRole("button",{name:"Agent CLI 能力"}).click();
   await page.locator("#view-orchestration").getByRole("button",{name:"添加项目"}).click();
   const projectForm=page.locator("#view-orchestration .orch-form");
   await projectForm.getByRole("textbox",{name:"项目名称"}).fill("TMS Test");
@@ -122,18 +146,24 @@ for(const engine of ["chromium","webkit"]){
   assert.equal(data.projects.length,1);
   assert.equal(data.tasks.length,1);
   assert.equal(data.worktrees.length,1);
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"编辑前置任务"}).click();
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"保存前置任务"}).click();
+  await page.locator("#view-orchestration .orch-task" ).getByRole("button",{name:"保存前置任务"}).waitFor({state:"detached"});
+  assert.equal(data.dependencies.length,0);
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"新增检查点"}).click();
   await page.locator("#view-orchestration .orch-task").getByRole("textbox",{name:"检查点摘要"}).fill("Reviewed interface and tests");
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"保存检查点"}).click();
+  await page.locator("#view-orchestration .orch-task" ).getByRole("button",{name:"保存检查点"}).waitFor({state:"detached"});
   assert.equal(data.checkpoints.length,1);
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"查看交接历史"}).click();
-  assert.match(await page.locator("#view-orchestration .orch-history").innerText(),/Reviewed interface and tests/);
+  await page.waitForFunction(() => document.querySelector("#view-orchestration .orch-history")?.textContent?.includes("Reviewed interface and tests"));
   await Promise.all([
     page.waitForResponse(r=>r.url().endsWith("/api/copy")),
     page.locator("#view-orchestration .orch-task").getByRole("button",{name:"复制任务交接信息"}).click()
   ]);
   assert.match(data.copied,/Worktree \(task-scoped\)/);
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"标记就绪"}).click();
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"检查调度条件"}).click();
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"启动 DeepSeek Harness"}).click();
   await page.locator("#view-orchestration .orch-run-summary").waitFor();
   assert.equal(data.runs.length,1);
@@ -145,6 +175,7 @@ for(const engine of ["chromium","webkit"]){
   data.tasks[0].status="review";data.tasks[0].revision++;
   await page.locator("#view-orchestration .orch-head").getByRole("button",{name:"刷新任务状态"}).click();
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"标记就绪"}).click();
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"检查调度条件"}).click();
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"续接 DSH 会话"}).click();
   assert.equal(data.runs.length,2);
   assert.equal(data.runs[0].resumeOf,data.runs[1].id);
@@ -156,7 +187,10 @@ for(const engine of ["chromium","webkit"]){
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"核销中断运行"}).click();
   assert.equal(data.recoveries.length,1);
   assert.equal(data.tasks[0].status,"blocked");
+  await page.waitForFunction(() => !document.querySelector("#view-orchestration")?.classList.contains("orch-busy"));
   await page.setViewportSize({width:420,height:740});
+  await page.locator("#view-orchestration").getByRole("button",{name:"派发就绪 DSH 任务"}).click();
+  assert.match(await page.locator("#view-orchestration .orch-dispatch-report").innerText(),/DSH 派发结果/);
   const sizing=await page.locator("#view-orchestration .orch-grid").evaluate((node)=>({width:node.clientWidth,scroll:node.scrollWidth}));
   assert.ok(sizing.scroll<=sizing.width+2, "narrow layout overflow: "+JSON.stringify(sizing));
  });

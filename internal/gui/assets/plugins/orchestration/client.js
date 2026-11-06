@@ -5,6 +5,11 @@ magpie.plugin("orchestration", (ctx) => {
   let tasks = [];
   let worktrees = [];
   let runs = [];
+  let dependencies = [];
+  let capabilities = [];
+  let showingCapabilities = false;
+  let editingDeps = "";
+  let dispatchReport = null;
   let dshCapability = null;
   let openLog = "";
   let logText = "";
@@ -38,7 +43,7 @@ magpie.plugin("orchestration", (ctx) => {
     return b;
   }
 
-  async function refresh() {
+  async function refresh(readyToRender) {
     if (!page) return;
     try {
       projects = await api("orchestration/projects");
@@ -46,9 +51,12 @@ magpie.plugin("orchestration", (ctx) => {
       tasks = selected ? await api("orchestration/tasks?project=" + encodeURIComponent(selected)) : [];
       worktrees = selected ? await api("orchestration/worktrees?project=" + encodeURIComponent(selected)) : [];
       runs = selected ? await api("orchestration/runs?project=" + encodeURIComponent(selected)) : [];
+      dependencies = selected ? await api("orchestration/dependencies?project=" + encodeURIComponent(selected)) : [];
       if (!web && dshCapability===null) { try {dshCapability = await api("orchestration/agents/dsh");} catch {dshCapability={available:false};} }
+      if (readyToRender) readyToRender();
       render();
     } catch (e) {
+      if (readyToRender) readyToRender();
       page.replaceChildren(el("div", "empty-state", e.message));
     }
   }
@@ -56,18 +64,20 @@ magpie.plugin("orchestration", (ctx) => {
   async function perform(work) {
     if (busy) return;
     busy = true;
+    page?.classList.add("orch-busy");
     try {
       await work();
       projectForm = false;
       taskForm = false;
-      busy = false;
-      await refresh();
+      await refresh(() => { busy = false; page?.classList.remove("orch-busy"); });
     } catch (e) {
       status(e.message, "err");
       busy = false;
+      page?.classList.remove("orch-busy");
       return;
     }
     busy = false;
+    page?.classList.remove("orch-busy");
   }
 
   function projectEditor() {
@@ -221,6 +231,41 @@ magpie.plugin("orchestration", (ctx) => {
     }catch(e){status(e.message,"err");}
   }
 
+
+  function dependencyEditor(task) {
+    const form=el("form","orch-form");
+    form.append(el("strong","",t("Select prerequisite tasks")));
+    const available=tasks.filter(x=>x.id!==task.id);
+    const checked=new Set(dependencies.filter(d=>d.taskId===task.id).map(d=>d.prerequisiteId));
+    const checks=[];
+    if(!available.length) form.append(el("p","orch-empty",t("No other tasks in this project")));
+    for(const item of available){
+      const label=el("label","orch-confirm");
+      const input=el("input");
+      input.type="checkbox";input.checked=checked.has(item.id);
+      label.append(input,el("span","",item.title+" · "+stateLabel(item.status)));
+      form.append(label);
+      checks.push({id:item.id,input});
+    }
+    const actions=el("div","orch-actions");
+    const save=button("Save prerequisites",()=>{});
+    save.type="submit";save.onclick=null;
+    form.onsubmit=e=>{
+      e.preventDefault();
+      perform(async()=>{
+        const ids=checks.filter(x=>x.input.checked).map(x=>x.id);
+        await api("orchestration/tasks/"+encodeURIComponent(task.id)+"/dependencies",{
+          revision:task.revision,prerequisiteIds:ids
+        });
+        editingDeps="";
+        status(t("Prerequisites saved"),"ok");
+      });
+    };
+    actions.append(save,button("Cancel",()=>{editingDeps="";render();}));
+    form.append(actions);
+    return form;
+  }
+
   function stateLabel(value) {
     const labels = {
       pending: t("Task pending"), ready: t("Task ready"), running: t("Task running"),
@@ -257,7 +302,29 @@ magpie.plugin("orchestration", (ctx) => {
     head.append(intro);
     if (!web) head.append(button("Add project", () => { projectForm = !projectForm; render(); }, "text"));
     head.append(button("Reload task status", () => refresh(), "text"));
+
+    head.append(button("Agent CLI capabilities",async()=>{
+      const opening=!showingCapabilities;
+      if(opening){try{capabilities=await api("orchestration/agents/capabilities");}catch(e){status(e.message,"err");return;}}
+      showingCapabilities=opening;render();
+    },"text"));
+
     page.append(head);
+
+    if(showingCapabilities){
+      const panel=el("section","orch-capabilities");
+      panel.append(el("b","",t("Verified Agent capabilities")));
+      for(const entry of capabilities){
+        const line=el("div","orch-capability");
+        line.append(el("strong","",entry.name));
+        line.append(el("span","",entry.autoRunnable?t("Headless execution available"):t("Agent requires manual handoff")));
+        if(entry.version) line.append(el("small","",entry.version));
+        if(entry.reason) line.append(el("p","",entry.reason));
+        panel.append(line);
+      }
+      page.append(panel);
+    }
+
     if (projectForm) page.append(projectEditor());
 
     const grid = el("div", "orch-grid");
@@ -282,7 +349,28 @@ magpie.plugin("orchestration", (ctx) => {
     const active = projects.find((p) => p.id === selected);
     toolbar.append(el("h3", "", active ? active.name : t("Project task list")));
     if (active && !web) toolbar.append(button("Add task", () => { taskForm = !taskForm; render(); }));
+
+    if(active && !web && dshCapability?.available){
+      toolbar.append(button("Dispatch ready DSH tasks",()=>perform(async()=>{
+        dispatchReport=await api("orchestration/projects/"+encodeURIComponent(active.id)+"/dispatch",{maxRuns:3});
+        status(t("DSH dispatch reviewed"),"ok");
+      })));
+    }
+
     right.append(toolbar);
+
+      if(active && dispatchReport?.projectId===active.id){
+        const reportPanel=el("div","orch-dispatch-report");
+        reportPanel.append(el("strong","",t("DSH dispatch summary")));
+        reportPanel.append(el("p","",t("DSH runs launched in batch")+": "+dispatchReport.started.length+
+          " · "+t("Tasks needing attention")+": "+dispatchReport.skipped.length));
+        for(const skip of dispatchReport.skipped){
+          const target=tasks.find(x=>x.id===skip.taskId);
+          reportPanel.append(el("p","", (target?.title||skip.taskId)+": "+skip.reason));
+        }
+        right.append(reportPanel);
+      }
+
     if (active) {
       right.append(el("p", "orch-path", active.repoPath + " · " + active.baseBranch));
       if (!web && dshCapability && !dshCapability.available) right.append(el("p", "orch-empty", t("DeepSeek Harness CLI unavailable; tasks remain manual.")));
@@ -298,6 +386,13 @@ magpie.plugin("orchestration", (ctx) => {
         item.append(el("small", "", (q.agent || t("Unassigned")) + " · " + t("Task version") + " " + q.revision));
         const existing = worktrees.find((w) => w.path.endsWith("task-" + q.id.slice(0, 16)));
         const latestRun = runs.find((r) => r.taskId === q.id);
+
+        const required=dependencies.filter(d=>d.taskId===q.id);
+        if(required.length){
+          const names=required.map(d=>tasks.find(x=>x.id===d.prerequisiteId)?.title||d.prerequisiteId);
+          item.append(el("small","orch-deps",t("Task prerequisites")+": "+names.join(" · ")));
+        }
+
         if (existing) {
           item.append(el("small", "orch-worktree", existing.path + " · " + existing.branch));
         }
@@ -347,6 +442,19 @@ magpie.plugin("orchestration", (ctx) => {
           })));
         }
 
+
+        if (existing && ["pending","ready","blocked","failed"].includes(q.status)){
+          actions.append(button("Edit prerequisites",()=>{editingDeps=q.id;render();}));
+        }
+        if(q.status==="ready" && existing){
+          actions.append(button("Check dispatch readiness",async()=>{
+            try {
+              const result=await api("orchestration/tasks/"+encodeURIComponent(q.id)+"/readiness");
+              status(result.ready?t("DSH task is ready for dispatch"):result.reason,result.ready?"ok":"err");
+            } catch(e) { status(e.message,"err"); }
+          }));
+        }
+
         if(isDSH && existing && q.status==="ready" && dshCapability?.available &&
            latestRun?.sessionId && ["completed","failed","cancelled"].includes(latestRun.state)){
           actions.append(button("Resume DSH session",()=>perform(async()=>{
@@ -373,6 +481,7 @@ magpie.plugin("orchestration", (ctx) => {
         }
         item.append(actions);
         if (editingCheckpoint===q.id) item.append(checkpointEditor(q,latestRun));
+        if (editingDeps===q.id) item.append(dependencyEditor(q));
         if (recovering===q.id && latestRun?.state==="interrupted") item.append(recoveryEditor(q,latestRun));
         if (showingHistory===q.id){
           const history=el("div","orch-history");

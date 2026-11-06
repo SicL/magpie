@@ -82,6 +82,10 @@ func Open(file string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initialize recoveries: %w", err)
 	}
+	if err := s.ensureDependencySchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize dependency graph: %w", err)
+	}
 	if err := s.ensureCheckpointSchema(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize checkpoints: %w", err)
@@ -311,6 +315,13 @@ func (s *Store) DeleteTask(id string) error {
 		if filepath.Base(wt.Path) == "task-"+t.ID[:16] {
 			return fmt.Errorf("%w: task owns a Git worktree; it must be reviewed before removing metadata", ErrConflict)
 		}
+	}
+	var deps int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM task_dependencies WHERE task_id=? OR prerequisite_id=?", id, id).Scan(&deps); err != nil {
+		return err
+	}
+	if deps > 0 {
+		return fmt.Errorf("%w: task is linked to prerequisite graph", ErrConflict)
 	}
 	var linked int
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM agent_runs WHERE task_id=?", id).Scan(&linked); err != nil {
