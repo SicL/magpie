@@ -1,0 +1,31 @@
+/* Project and task management. All selectors are scoped to the new plugin. */
+.orch-head, .orch-toolbar, .orch-task-top, .orch-actions { display: flex; align-items: center; gap: 10px; }
+.orch-head { justify-content: space-between; margin: 8px 0 16px; }
+.orch-intro { display: flex; flex-direction: column; gap: 4px; }
+.orch-intro b { font-size: 14px; }
+.orch-intro span, .orch-path, .orch-detail, .orch-empty, .orch-task small { color: var(--muted); font-size: 12px; }
+.orch-grid { display: grid; grid-template-columns: minmax(185px, 30%) 1fr; gap: 18px; min-width: 0; }
+.orch-section { min-width: 0; border: 1px solid var(--line, #9994); border-radius: 12px; padding: 14px; }
+.orch-section h3 { font-size: 13px; margin: 0 0 12px; }
+.orch-toolbar { justify-content: space-between; margin-bottom: 10px; }
+.orch-toolbar h3 { margin: 0; }
+.orch-project { font: inherit; color: var(--fg); display: flex; flex-direction: column; gap: 5px; width: 100%; text-align: left; border: 0; padding: 10px; background: transparent; cursor: pointer; border-radius: 7px; }
+.orch-project:hover, .orch-project.on { background: var(--seg-track, #8882); }
+.orch-project small { display: block; font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.orch-task { padding: 12px 0; border-top: 1px solid var(--line, #9994); }
+.orch-task-top { justify-content: space-between; align-items: baseline; }
+.orch-task-top strong { font-size: 12px; }
+.orch-state { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.orch-detail { margin: 5px 0; white-space: pre-wrap; }
+.orch-actions { flex-wrap: wrap; margin-top: 8px; }
+.orch-actions button { font: inherit; font-size: 11px; background: transparent; border: 1px solid var(--line, #9994); border-radius: 6px; padding: 5px 9px; color: var(--fg); cursor: pointer; }
+.orch-actions button:hover { background: var(--seg-track, #8882); }
+.orch-form { display: grid; gap: 10px; border: 1px solid var(--line, #9994); border-radius: 10px; padding: 12px; margin: 10px 0; }
+.orch-field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.orch-field input { width: 100%; max-width: none; min-width: 0; box-sizing: border-box; }
+.orch-empty { padding: 12px 0; }
+.orch-path { overflow-wrap: anywhere; margin: 0 0 12px; }
+@media (max-width: 650px) { .orch-grid { grid-template-columns: 1fr; } .orch-head { align-items: flex-start; } }
+
+
+.orch-worktree { display: block; overflow-wrap: anywhere; font-size: 11px; color: var(--muted); margin-top: 6px; }
