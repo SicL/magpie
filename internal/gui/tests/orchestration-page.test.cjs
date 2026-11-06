@@ -33,6 +33,21 @@ function serve(lang, data) {
    }
    return json(data.tasks);
   }
+  if(url.pathname==="/api/orchestration/agents/dsh") return json({adapter:"deepseek-harness",available:true,version:"fixture"});
+  if(url.pathname==="/api/orchestration/runs") return json(data.runs);
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/status") {
+   const input=req.postDataJSON();data.tasks[0].status=input.status;data.tasks[0].revision++;
+   return json(data.tasks[0]);
+  }
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/run") {
+   const run={id:"aabbccddeeff00112233445566778899",taskId:data.tasks[0].id,adapter:"deepseek-harness",state:"running",pid:123,worktreePath:data.worktrees[0].path};
+   data.runs.unshift(run);data.tasks[0].status="running";data.tasks[0].revision++;
+   return json(run,201);
+  }
+  if(url.pathname==="/api/orchestration/runs/aabbccddeeff00112233445566778899/log") return json({tail:"fixture safe log line"});
+  if(url.pathname==="/api/orchestration/runs/aabbccddeeff00112233445566778899/stop") {
+   data.runs[0].state="stopping";return json({stopping:true});
+  }
   if(url.pathname==="/api/orchestration/worktrees") return json(data.worktrees);
   if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/worktree"){
    data.worktrees.push({taskId:data.tasks[0].id,path:"C:\\tmp\\worktrees\\task-0011223344556677",branch:"agent/task-0011223344556677",head:"f".repeat(40)});
@@ -55,7 +70,7 @@ for(const engine of ["chromium","webkit"]){
   t.after(()=>ctx.close());
   const page=await ctx.newPage();
   page.setDefaultTimeout(9000);
-  const data={projects:[],tasks:[],worktrees:[]};
+  const data={projects:[],tasks:[],worktrees:[],runs:[]};
   await page.route("**/*",serve("zh",data));
   await page.goto("http://magpie.test/?view=orchestration");
   await page.locator("#view-orchestration .orch-head").waitFor({timeout:10000});
@@ -69,6 +84,7 @@ for(const engine of ["chromium","webkit"]){
   await page.locator("#view-orchestration").getByRole("button",{name:"添加任务"}).click();
   const taskForm=page.locator("#view-orchestration .orch-form");
   await taskForm.getByRole("textbox",{name:"任务名称"}).fill("Develop API");
+  await taskForm.getByRole("textbox",{name:"分配 Agent（可选）"}).fill("DeepSeek Harness");
   await taskForm.getByRole("button",{name:"创建任务"}).click();
   await page.locator("#view-orchestration .orch-task").filter({hasText:"Develop API"}).waitFor();
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"创建隔离 Worktree"}).click();
@@ -76,6 +92,14 @@ for(const engine of ["chromium","webkit"]){
   assert.equal(data.projects.length,1);
   assert.equal(data.tasks.length,1);
   assert.equal(data.worktrees.length,1);
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"标记就绪"}).click();
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"启动 DeepSeek Harness"}).click();
+  await page.locator("#view-orchestration .orch-run-summary").waitFor();
+  assert.equal(data.runs.length,1);
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"查看 Agent 日志"}).click();
+  assert.match(await page.locator("#view-orchestration .orch-log").innerText(),/fixture safe log line/);
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"停止此 Agent 运行"}).click();
+  assert.equal(data.runs[0].state,"stopping");
   await page.setViewportSize({width:420,height:740});
   const sizing=await page.locator("#view-orchestration .orch-grid").evaluate((node)=>({width:node.clientWidth,scroll:node.scrollWidth}));
   assert.ok(sizing.scroll<=sizing.width+2, "narrow layout overflow: "+JSON.stringify(sizing));

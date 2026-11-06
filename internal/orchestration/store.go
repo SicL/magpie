@@ -44,7 +44,10 @@ type Task struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db  *sql.DB
+	dir string
+}
 
 func Open(file string) (*Store, error) {
 	if file == "" {
@@ -70,7 +73,16 @@ func Open(file string) (*Store, error) {
 			return nil, fmt.Errorf("initialize orchestration: %w", err)
 		}
 	}
-	return &Store{db: db}, nil
+	s := &Store{db: db, dir: filepath.Dir(file)}
+	if err := s.ensureRunSchema(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := s.markPreviousRunsUncertain(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -291,6 +303,13 @@ func (s *Store) DeleteTask(id string) error {
 		if filepath.Base(wt.Path) == "task-"+t.ID[:16] {
 			return fmt.Errorf("%w: task owns a Git worktree; it must be reviewed before removing metadata", ErrConflict)
 		}
+	}
+	var linked int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM agent_runs WHERE task_id=?", id).Scan(&linked); err != nil {
+		return err
+	}
+	if linked > 0 {
+		return fmt.Errorf("%w: task has run history", ErrConflict)
 	}
 	res, err := s.db.Exec("DELETE FROM tasks WHERE id=? AND status IN ('pending','blocked','failed','done')", id)
 	if err != nil {

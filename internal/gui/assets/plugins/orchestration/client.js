@@ -1,10 +1,13 @@
-// Projects & Tasks: an opt-in coordination view. This page deliberately does
-// not launch coding agents; execution adapters are a separate milestone.
+// Projects & Tasks: an opt-in coordination view. DSH headless runs are explicit desktop actions.
 magpie.plugin("orchestration", (ctx) => {
   let page = null;
   let projects = [];
   let tasks = [];
   let worktrees = [];
+  let runs = [];
+  let dshCapability = null;
+  let openLog = "";
+  let logText = "";
   let selected = "";
   let projectForm = false;
   let taskForm = false;
@@ -37,6 +40,8 @@ magpie.plugin("orchestration", (ctx) => {
       if (!projects.some((p) => p.id === selected)) selected = projects[0]?.id || "";
       tasks = selected ? await api("orchestration/tasks?project=" + encodeURIComponent(selected)) : [];
       worktrees = selected ? await api("orchestration/worktrees?project=" + encodeURIComponent(selected)) : [];
+      runs = selected ? await api("orchestration/runs?project=" + encodeURIComponent(selected)) : [];
+      if (!web && dshCapability===null) { try {dshCapability = await api("orchestration/agents/dsh");} catch {dshCapability={available:false};} }
       render();
     } catch (e) {
       page.replaceChildren(el("div", "empty-state", e.message));
@@ -142,9 +147,10 @@ magpie.plugin("orchestration", (ctx) => {
     const head = el("div", "orch-head");
     const intro = el("div", "orch-intro");
     intro.append(el("b", "", t("Projects and tasks")),
-      el("span", "", t(web ? "Browser mode is read-only." : "Organize work across agents; execution is not automated yet.")));
+      el("span", "", t(web ? "Browser mode is read-only." : "Assign tasks and start DeepSeek Harness only by explicit action.")));
     head.append(intro);
     if (!web) head.append(button("Add project", () => { projectForm = !projectForm; render(); }, "text"));
+    head.append(button("Reload task status", () => refresh(), "text"));
     page.append(head);
     if (projectForm) page.append(projectEditor());
 
@@ -173,6 +179,8 @@ magpie.plugin("orchestration", (ctx) => {
     right.append(toolbar);
     if (active) {
       right.append(el("p", "orch-path", active.repoPath + " · " + active.baseBranch));
+      if (!web && dshCapability && !dshCapability.available) right.append(el("p", "orch-empty", t("DeepSeek Harness CLI unavailable; tasks remain manual.")));
+      if (!web && dshCapability?.available) right.append(el("p","orch-safety",t("Agent runs use your local account permissions; verify each task before starting.")));
       if (taskForm) right.append(taskEditor());
       if (!tasks.length) right.append(el("p", "orch-empty", t("No tasks in this project")));
       for (const q of tasks) {
@@ -183,12 +191,43 @@ magpie.plugin("orchestration", (ctx) => {
         if (q.details) item.append(el("p", "orch-detail", q.details));
         item.append(el("small", "", (q.agent || t("Unassigned")) + " · " + t("Task version") + " " + q.revision));
         const existing = worktrees.find((w) => w.path.endsWith("task-" + q.id.slice(0, 16)));
+        const latestRun = runs.find((r) => r.taskId === q.id);
         if (existing) {
           item.append(el("small", "orch-worktree", existing.path + " · " + existing.branch));
         }
+        if (latestRun) {
+          const summary = el("div", "orch-run-summary");
+          summary.append(el("span", "", t("Latest agent run") + ": " + latestRun.state));
+          if(latestRun.sessionId) summary.append(el("span","",t("DSH session ID")+": "+latestRun.sessionId));
+          if (latestRun.exitCode != null) summary.append(el("span", "", " · " + t("Agent exit code") + " " + latestRun.exitCode));
+          if (latestRun.failure) summary.append(el("div", "orch-failure", latestRun.failure));
+          item.append(summary);
+          if (openLog === latestRun.id && !web) item.append(el("pre", "orch-log", logText));
+        }
         const actions = el("div", "orch-actions");
         if (web) { right.append(item); continue; }
+        const isDSH = ["deepseek harness", "dsh"].includes((q.agent || "").trim().toLowerCase());
+        if (isDSH && existing && q.status === "ready" && dshCapability?.available) {
+          actions.append(button("Start DeepSeek Harness", () => perform(async () => {
+            await api("orchestration/tasks/" + encodeURIComponent(q.id) + "/run", {revision:q.revision});
+            status(t("Agent process started"), "ok");
+          })));
+        }
+        if (latestRun) {
+          actions.append(button("View agent log", () => perform(async () => {
+            const log=await api("orchestration/runs/" + encodeURIComponent(latestRun.id) + "/log");
+            openLog=latestRun.id;
+            logText=log.tail || t("Agent log has no output yet");
+          })));
+          if (["starting", "running"].includes(latestRun.state)) {
+            actions.append(button("Stop owned agent run", () => perform(async () => {
+              await api("orchestration/runs/" + encodeURIComponent(latestRun.id) + "/stop", {});
+              status(t("Agent stop requested"), "ok");
+            })));
+          }
+        }
         for (const statusName of next[q.status] || []) {
+          if (isDSH && existing && statusName === "running") continue;
           actions.append(button(markLabel(statusName), () => perform(async () => {
             await api("orchestration/tasks/" + encodeURIComponent(q.id) + "/status", {
               revision: q.revision, status: statusName
