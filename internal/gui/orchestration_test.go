@@ -101,6 +101,10 @@ func TestOrchestrationAPIProjectsAndTasks(t *testing.T) {
 	if code != 409 {
 		t.Fatalf("cannot remove project with task: %d %s", code, body)
 	}
+	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/runs?project="+project.ID, nil)
+	if code != 200 || string(bytes.TrimSpace(body)) != "[]" {
+		t.Fatalf("unexpected run list %d %s", code, body)
+	}
 	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/tasks?project="+project.ID, nil)
 	if code != 200 {
 		t.Fatalf("list task %d %s", code, body)
@@ -124,11 +128,53 @@ func TestOrchestrationReadOnlyWebBlocksWrites(t *testing.T) {
 	if code != http.StatusForbidden {
 		t.Fatalf("web write %d %s", code, body)
 	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/tasks/untrusted/run", map[string]any{"revision": 1})
+	if code != http.StatusForbidden {
+		t.Fatalf("browser must not launch agent: %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/runs/untrusted/stop", map[string]any{})
+	if code != http.StatusForbidden {
+		t.Fatalf("browser must not stop agent: %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/runs/untrusted/log", nil)
+	if code != http.StatusForbidden {
+		t.Fatalf("browser must not read agent logs: %d %s", code, body)
+	}
 	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/projects", nil)
 	if code != http.StatusOK || string(bytes.TrimSpace(body)) != "[]" {
 		t.Fatalf("web list %d %s", code, body)
 	}
 	if _, err = os.Stat(filepath.Join(dir, "project.db")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOrchestrationCrossOriginCannotExecuteAgents(t *testing.T) {
+	store, err := orchestration.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	mux := http.NewServeMux()
+	mountOrchestrationRoutes(mux, func() (*orchestration.Store, error) { return store, nil }, false)
+	for _, tc := range []struct {
+		label, origin, contentType, fetchSite string
+		want                                  int
+	}{
+		{"foreign origin", "https://evil.example", "application/json", "cross-site", http.StatusForbidden},
+		{"null origin", "null", "application/json", "", http.StatusForbidden},
+		{"simple form", "", "text/plain", "", http.StatusUnsupportedMediaType},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/api/orchestration/tasks/unknown/run", bytes.NewBufferString("{\"revision\":1}"))
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set("Content-Type", tc.contentType)
+			req.Header.Set("Sec-Fetch-Site", tc.fetchSite)
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
+			if rr.Code != tc.want {
+				t.Fatalf("request permitted: %d %s", rr.Code, rr.Body.String())
+			}
+		})
 	}
 }

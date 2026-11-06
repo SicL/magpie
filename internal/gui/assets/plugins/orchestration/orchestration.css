@@ -29,3 +29,7 @@
 
 
 .orch-worktree { display: block; overflow-wrap: anywhere; font-size: 11px; color: var(--muted); margin-top: 6px; }
+.orch-run-summary {display:flex;flex-wrap:wrap;gap:6px;color:var(--muted);font-size:11px;margin-top:7px;}
+.orch-failure {flex-basis:100%;color:var(--danger, #c44343);overflow-wrap:anywhere;}
+.orch-log {white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow:auto;max-height:220px;padding:10px;border-radius:8px;background:var(--seg-track, #8882);font-size:10px;line-height:1.55;}
+.orch-safety { color: var(--muted); font-size: 11px; border-left: 2px solid var(--line, #9994); padding-left: 9px; margin: 8px 0 12px; }

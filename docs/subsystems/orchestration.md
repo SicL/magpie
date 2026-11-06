@@ -67,3 +67,70 @@ These are **manual task records**, not actual Agent process states. Updates use 
 - Follow the root AGENTS.md and docs/code-standards.md: no tests in the user's real Agent home, and no network access from tests.
 
 Creating a Worktree is an explicit user action: the tool validates the real Git root, checks symlink resolution, chooses a task-specific branch and directory, and uses Git without --force. It never removes or resets the checkout, including after a command failure. Worktree listings come from Git itself. Concurrent multi-process execution leases, automated Agent startup, MR approval and cleanup remain future milestones; this registry is not yet a scheduler.
+
+## P3 DeepSeek Harness headless execution
+
+The first executable adapter is deliberately limited to DeepSeek Harness.
+Only a desktop user action can start it, and only for a task whose current
+status is ready, whose agent is DeepSeek Harness, and whose task-specific
+Git Worktree exists. WorkBuddy and ZCode remain manually coordinated.
+
+### Run lifecycle and ownership
+
+- The existing user-visible task status remains the workflow state.
+- Each process has a separate durable Run record in agent_runs with an ID,
+  project task, adapter, process ID, Git Worktree, timestamps, exit code,
+  failure category and native DSH session ID.
+- Runs transition through starting, running and stopping into completed,
+  failed or cancelled. After an unexpected Magpie supervisor restart,
+  unfinished runs are marked interrupted **and stay unclaimable** until
+  their old process and working tree can be inspected. Do not silently
+  relaunch a task just because a process ID is missing.
+- The latest process outcome advances an unmodified running workflow task
+  to review (exit 0), failed (non-zero exit), or blocked (explicit stop).
+  This does not imply that tests or the user acceptance criteria passed.
+- One active or interrupted run per task is enforced by a SQLite partial
+  unique index. Up to three runs can be active in one Magpie supervisor.
+- RunService uses the existing internal/proc.StartTree command grouping.
+  Stop only targets a process tree started and owned by this exact
+  supervisor, never an arbitrary PID or a different running app.
+- The actual CLI command is DeepSeek Harness' headless profile with
+  structured JSON events read from stdout. Task instructions go through
+  stdin; the prompt is not duplicated into the log. A native session
+  event with sessionId is captured and stored for later handoff support.
+  P3 records the ID but **does not yet offer automatic session resume**.
+
+### HTTP API
+
+- GET /api/orchestration/agents/dsh: CLI availability and version.
+- GET /api/orchestration/runs?project={id}: run metadata.
+- GET /api/orchestration/runs/{id}: one run's metadata.
+- POST /api/orchestration/tasks/{id}/run: explicit launch, with task revision
+  in the JSON body.
+- POST /api/orchestration/runs/{id}/stop: stop only current-supervisor-owned
+  process tree.
+- GET /api/orchestration/runs/{id}/log: up to 32 KiB of local log tail.
+
+Starting and stopping runs require JSON, reject null/cross-site origins and
+are unavailable in browser/Web mode. Log content is also unavailable in
+browser mode. Browser mode may show metadata, not private logs.
+
+### Security and privacy
+
+**Git Worktree isolation is not an OS sandbox.** A DSH agent can execute
+commands with the permissions of the logged-in local user. The desktop UI
+warns about this; tasks are launched only after an explicit user action.
+Do not test execution against TMS production, live agent settings, or
+unrelated project folders.
+
+Run logs are stored only in the local Magpie configuration directory under
+orchestration/run-logs. They use restricted creation permissions, a 2 MiB
+size limit, and best-effort token redaction. Because arbitrary tool output
+may contain additional secrets, **log sanitization is not a guarantee**;
+treat log files as sensitive. Native DSH session content is still owned
+by DSH, not copied into Magpie's task database.
+
+No process is automatically launched from a user-created task. No task
+is automatically merged to Git main or submitted as an MR. Automated
+credential handling, process crash reconciliation and real Linux/macOS
+tree supervision still require separate review and verification.

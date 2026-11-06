@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -56,7 +58,11 @@ func orchestrationReadJSON(rw http.ResponseWriter, r *http.Request, v any) error
 	return nil
 }
 
-func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.Store, error), readOnly bool) {
+func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.Store, error), readOnly bool, builders ...func(*orchestration.Store) *orchestration.RunService) {
+	buildRunner := orchestration.NewRunService
+	if len(builders) > 0 {
+		buildRunner = builders[0]
+	}
 	db := func(rw http.ResponseWriter) (*orchestration.Store, bool) {
 		s, err := store()
 		if err != nil {
@@ -74,6 +80,136 @@ func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.S
 		}
 		return true
 	}
+
+	// DSH execution is registered only in the desktop API. Browser access is
+	// limited to metadata; task log content and all process mutation are local.
+	var runnerOnce sync.Once
+	var runner *orchestration.RunService
+	runService := func(rw http.ResponseWriter) (*orchestration.RunService, bool) {
+		s, ok := db(rw)
+		if !ok {
+			return nil, false
+		}
+		runnerOnce.Do(func() { runner = buildRunner(s) })
+		return runner, true
+	}
+	// Agent execution is higher risk than a settings change. Require JSON
+	// and reject cross-site browser origins and null origins. Same-origin desktop
+	// fetch is allowed; a local command caller has the user's own OS rights.
+	executionAllowed := func(rw http.ResponseWriter, r *http.Request) bool {
+		if !allowed(rw) {
+			return false
+		}
+		kind, _, mediaErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if mediaErr != nil || kind != "application/json" {
+			rw.Header().Set("Content-Type", "application/json")
+			rw.WriteHeader(http.StatusUnsupportedMediaType)
+			_ = json.NewEncoder(rw).Encode(map[string]string{"error": "application/json required"})
+			return false
+		}
+		site := r.Header.Get("Sec-Fetch-Site")
+		origin := r.Header.Get("Origin")
+		reject := site == "cross-site" || origin == "null"
+		if origin != "" && origin != "null" {
+			parsed, e := url.Parse(origin)
+			if e != nil || !strings.EqualFold(parsed.Host, r.Host) {
+				reject = true
+			}
+		}
+		if reject {
+			rw.Header().Set("Content-Type", "application/json")
+			rw.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(rw).Encode(map[string]string{"error": "cross-origin execution is forbidden"})
+			return false
+		}
+		return true
+	}
+	mux.HandleFunc("GET /api/orchestration/agents/dsh", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, orchestration.DetectDSH())
+	})
+	mux.HandleFunc("GET /api/orchestration/runs", func(rw http.ResponseWriter, r *http.Request) {
+		project := strings.TrimSpace(r.URL.Query().Get("project"))
+		if project == "" {
+			orchestrationFailure(rw, errors.Join(orchestration.ErrInvalid, errors.New("project is required")))
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		items, err := s.ProjectRuns(project)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, items)
+	})
+	mux.HandleFunc("GET /api/orchestration/runs/{id}", func(rw http.ResponseWriter, r *http.Request) {
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		item, err := s.Run(r.PathValue("id"))
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, item)
+	})
+	mux.HandleFunc("GET /api/orchestration/runs/{id}/log", func(rw http.ResponseWriter, r *http.Request) {
+		if !allowed(rw) {
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		tail, err := s.RunLog(r.PathValue("id"))
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]string{"tail": tail})
+	})
+	mux.HandleFunc("POST /api/orchestration/tasks/{id}/run", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Revision int64 `json:"revision"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		runner, ok := runService(rw)
+		if !ok {
+			return
+		}
+		item, err := runner.Start(r.PathValue("id"), input.Revision)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		rw.WriteHeader(http.StatusCreated)
+		writeJSON(rw, item)
+	})
+	mux.HandleFunc("POST /api/orchestration/runs/{id}/stop", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		runner, ok := runService(rw)
+		if !ok {
+			return
+		}
+		if err := runner.Stop(r.PathValue("id")); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]bool{"stopping": true})
+	})
+
 	mux.HandleFunc("GET /api/orchestration/projects", func(rw http.ResponseWriter, r *http.Request) {
 		s, ok := db(rw)
 		if !ok {
