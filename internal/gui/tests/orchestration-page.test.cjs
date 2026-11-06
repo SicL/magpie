@@ -95,6 +95,16 @@ function serve(lang, data) {
     }
     return json(data.zcodeLocalModel);
   }
+  if(url.pathname==="/api/orchestration/agents/codebuddy/config"){
+    if(req.method()==="POST")
+      data.codeBuddyConfig={executable:req.postDataJSON().executable,configured:true,mode:"manual-handoff"};
+    return json(data.codeBuddyConfig);
+  }
+  if(url.pathname==="/api/orchestration/agents/codebuddy/probe"){
+    data.codeBuddyProbed=true;
+    return json({id:"codebuddy-code-cli",name:"CodeBuddy Code CLI",cliFound:true,
+      autoRunnable:false,version:"2.180.0-test",reason:"Independent CLI verified. Manual handoff only."});
+  }
   if(url.pathname==="/api/orchestration/agents/zcode/config"){
     if(req.method()==="POST"){
       data.zcodeConfig={executable:req.postDataJSON().executable,configured:true,mode:"plan"};
@@ -154,7 +164,7 @@ for(const engine of ["chromium","webkit"]){
   t.after(()=>ctx.close());
   const page=await ctx.newPage();
   page.setDefaultTimeout(9000);
-  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],dependencies:[],copied:"",zcodeConfig:{configured:false,mode:"plan",executable:""},zcodeLocalModel:{configured:false},zcodeVerified:false};
+  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],dependencies:[],copied:"",zcodeConfig:{configured:false,mode:"plan",executable:""},codeBuddyConfig:{configured:false,mode:"manual-handoff",executable:""},codeBuddyProbed:false,zcodeLocalModel:{configured:false},zcodeVerified:false};
   await page.route("**/*",serve("zh",data));
   await page.goto("http://magpie.test/?view=orchestration");
   await page.locator("#view-orchestration .orch-head").waitFor({timeout:10000});
@@ -180,6 +190,17 @@ for(const engine of ["chromium","webkit"]){
   await page.locator("#view-orchestration").getByText(/ZCode CLI 计划模式参数核验通过/).waitFor();
   await page.locator("#view-orchestration").getByRole("button",{name:"配置 ZCode CLI"}).click();
 
+  await page.locator("#view-orchestration").getByRole("button",{name:"配置 CodeBuddy CLI"}).click();
+  await page.locator("#view-orchestration .orch-form").getByRole("textbox",{name:"CodeBuddy CLI 程序路径"}).fill(
+    "C:\\tools\\codebuddy\\node_modules\\@tencent-ai\\codebuddy-code\\bin\\codebuddy");
+  await page.locator("#view-orchestration .orch-form").getByRole("button",{name:"保存 CodeBuddy CLI 路径"}).click();
+  await page.waitForFunction(() => !document.querySelector("#view-orchestration")?.classList.contains("orch-busy"));
+  assert.equal(data.codeBuddyConfig.configured,true);
+  await page.locator("#view-orchestration .orch-form").getByRole("button",{name:"核验 CodeBuddy CLI"}).click();
+  await page.locator("#view-orchestration").getByText(/CodeBuddy CLI 参数核验通过/).waitFor();
+  assert.equal(data.codeBuddyProbed,true);
+  assert.equal(data.runs.length,0,"CLI probe must not auto-start a task");
+  await page.locator("#view-orchestration").getByRole("button",{name:"配置 CodeBuddy CLI"}).click();
   await page.locator("#view-orchestration").getByRole("button",{name:"添加项目"}).click();
   const projectForm=page.locator("#view-orchestration .orch-form");
   await projectForm.getByRole("textbox",{name:"项目名称"}).fill("TMS Test");

@@ -457,3 +457,77 @@ func TestZCodeReadinessDesktopOnlyAndConfirmation(t *testing.T) {
 		t.Fatalf("cross-site triggered network probe %d", rw.Code)
 	}
 }
+
+func TestCodeBuddyCLIConfigProbeAndDesktopGuards(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("Node.js is required for CodeBuddy CLI probe")
+	}
+	s, err := orchestration.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "node_modules", "@tencent-ai", "codebuddy-code")
+	binDir := filepath.Join(pkgDir, "bin")
+	if err = os.MkdirAll(binDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{"name":"@tencent-ai/codebuddy-code"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(binDir, "codebuddy")
+	js := `if(process.argv.includes('--help')){console.log('--print --allowedTools --output-format');process.exit(0);}
+if(process.argv.includes('--version')){console.log('2.180.0-test');process.exit(0);}
+process.exit(7);`
+	if err = os.WriteFile(path, []byte(js), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mountOrchestrationRoutes(mux, func() (*orchestration.Store, error) { return s, nil }, false)
+	route := "/api/orchestration/agents/codebuddy/config"
+	code, body := orchestrationRequest(t, mux, "GET", route, nil)
+	if code != http.StatusOK || !bytes.Contains(body, []byte("manual-handoff")) {
+		t.Fatalf("empty codebuddy profile %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", route, map[string]any{"executable": "workbuddy.exe"})
+	if code != http.StatusBadRequest {
+		t.Fatalf("desktop executable accepted %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", route, map[string]any{"executable": path})
+	if code != http.StatusOK || !bytes.Contains(body, []byte("configured")) {
+		t.Fatalf("codebuddy profile failed %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/agents/codebuddy/probe", map[string]any{"confirm": false})
+	if code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed probe %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/agents/codebuddy/probe", map[string]any{"confirm": true})
+	if code != http.StatusOK || !bytes.Contains(body, []byte("2.180.0-test")) || !bytes.Contains(body, []byte(`"autoRunnable":false`)) {
+		t.Fatalf("probe improperly enabled CodeBuddy execution %d %s", code, body)
+	}
+	webOnly := http.NewServeMux()
+	mountOrchestrationRoutes(webOnly, func() (*orchestration.Store, error) { return s, nil }, true)
+	for _, tc := range []struct {
+		method, path string
+		body         any
+	}{
+		{"GET", route, nil},
+		{"POST", route, map[string]any{"executable": path}},
+		{"POST", "/api/orchestration/agents/codebuddy/probe", map[string]any{"confirm": true}},
+	} {
+		code, body = orchestrationRequest(t, webOnly, tc.method, tc.path, tc.body)
+		if code != http.StatusForbidden {
+			t.Fatalf("web mode accessed CodeBuddy %s %s: %d %s", tc.method, tc.path, code, body)
+		}
+	}
+	req := httptest.NewRequest("POST", route, bytes.NewBufferString(`{"executable":"malicious"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://untrusted.example")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rw := httptest.NewRecorder()
+	mux.ServeHTTP(rw, req)
+	if rw.Code != http.StatusForbidden {
+		t.Fatalf("cross-site changed CodeBuddy config %d", rw.Code)
+	}
+}

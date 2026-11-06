@@ -13,6 +13,9 @@ magpie.plugin("orchestration", (ctx) => {
   let zcodeLocalModel = null;
   let zcodeLocalReadiness = null;
   let zcodeProbe = null;
+  let showingCodeBuddySetup = false;
+  let codeBuddyConfig = null;
+  let codeBuddyProbe = null;
   let zcodeVerified = new Set();
   let editingDeps = "";
   let dispatchReport = null;
@@ -322,6 +325,35 @@ magpie.plugin("orchestration", (ctx) => {
     return form;
   }
 
+  function codeBuddySettingsEditor(){
+    const form=el("form","orch-form");
+    form.append(el("b","",t("CodeBuddy CLI setup")));
+    form.append(el("p","orch-safety",t("Independent CodeBuddy CLI only; authentication and tool permissions are not verified. Manual handoff only; no automatic execution or -y bypass.")));
+    const cli=field("CodeBuddy CLI executable","D:\\tools\\codebuddy\\node_modules\\@tencent-ai\\codebuddy-code\\bin\\codebuddy",codeBuddyConfig?.executable||"");
+    form.append(cli.box);
+    if(codeBuddyProbe){
+      const label=codeBuddyProbe.cliFound?t("CodeBuddy CLI help contract verified"):t("CodeBuddy CLI probe failed");
+      form.append(el("p","orch-capability",label+": "+(codeBuddyProbe.reason||"")));
+    }
+    const actions=el("div","orch-actions");
+    const save=button("Save CodeBuddy CLI path",()=>{});
+    save.type="submit";save.onclick=null;
+    form.onsubmit=e=>{
+      e.preventDefault();
+      perform(async()=>{
+        codeBuddyConfig=await api("orchestration/agents/codebuddy/config",{executable:cli.input.value});
+        codeBuddyProbe=null;
+        status(t("CodeBuddy CLI path saved"),"ok");
+      });
+    };
+    actions.append(save,button("Verify CodeBuddy CLI",()=>perform(async()=>{
+      codeBuddyProbe=await api("orchestration/agents/codebuddy/probe",{confirm:true});
+      status(codeBuddyProbe.reason,codeBuddyProbe.cliFound?"ok":"err");
+    })));
+    actions.append(button("Cancel",()=>{showingCodeBuddySetup=false;render();}));
+    form.append(actions);
+    return form;
+  }
   function dependencyEditor(task) {
     const form=el("form","orch-form");
     form.append(el("strong","",t("Select prerequisite tasks")));
@@ -413,7 +445,16 @@ magpie.plugin("orchestration", (ctx) => {
       },"text"));
     }
 
-    page.append(head);
+    if(!web){
+      head.append(button("Configure CodeBuddy CLI",async()=>{
+        if(!showingCodeBuddySetup){
+          try{codeBuddyConfig=await api("orchestration/agents/codebuddy/config");}
+          catch(e){status(e.message,"err");return;}
+        }
+        showingCodeBuddySetup=!showingCodeBuddySetup;
+        render();
+      },"text"));
+    }    page.append(head);
 
     if(showingCapabilities){
       const panel=el("section","orch-capabilities");
@@ -431,6 +472,7 @@ magpie.plugin("orchestration", (ctx) => {
 
     if (projectForm) page.append(projectEditor());
     if(showingZCodeSetup && !web) page.append(zcodeSettingsEditor());
+    if(showingCodeBuddySetup && !web) page.append(codeBuddySettingsEditor());
     if(showingZCodeSetup && !web) page.append(zcodeLocalModelEditor());
 
     const grid = el("div", "orch-grid");

@@ -397,3 +397,47 @@ success, exact model mismatch, malformed/missing JSON, oversized bodies,
 server errors, rejection of redirects and proxies, Web/cross-site API
 guards, and confirmation that readiness is not a model-canary record.
 The Projects UI workflow is checked in both Chromium and WebKit.
+
+## P9: independent CodeBuddy Code CLI (manual handoff only)
+
+WorkBuddy and WorkBuddyAI Desktop do not automatically authorize CodeBuddy
+Code CLI execution. P9 adds explicit desktop-only configuration and a
+version/help probe for an **independently installed official npm package**.
+Magpie does not install the CLI globally, copy Desktop credentials, or
+treat a successful help probe as permission to execute the agent.
+
+- The registered path must resolve to a regular `bin/codebuddy` file
+  inside a package with `package.json` name
+  `@tencent-ai/codebuddy-code`. Desktop exe paths, packaged
+  `@genie/agent-cli`, arbitrary .cmd/.bat shims, missing binaries and
+  wrong package metadata are rejected.
+- `GET/POST /api/orchestration/agents/codebuddy/config` allow the
+  desktop user to save and inspect this path in the same local SQLite
+  `agent_cli_profiles` table used by the ZCode adapter.
+- `POST /api/orchestration/agents/codebuddy/probe` needs explicit
+  `{confirm:true}` and desktop same-origin permissions. It runs only
+  `--help` and `--version` under a separate Magpie-owned temporary
+  HOME/APPDATA/TEMP directory and restricted process environment.
+  The executable is invoked using Node directly and an owned process
+  tree with a bounded timeout and output. Magpie never passes
+  `CODEBUDDY_IS_SANDBOX`, API keys, or other inherited provider credentials.
+- The CLI probe checks advertised `--print`, `--allowedTools` and
+  `--output-format` options. A successful check sets `cliFound=true`
+  but **always** `autoRunnable=false`; there is no P9 task-run route.
+- Projects UI offers the CLI path, separate capability probe and
+  explanatory warning. Existing project/task handoff copy supports
+  manual work in WorkBuddy/CodeBuddy and still preserves the
+  one-writer-per-Worktree rule.
+- The official CLI's headless documentation says tools requiring
+  authorization need `-y` / `--dangerously-skip-permissions`.
+  P9 intentionally never invokes either; no unattended filesystem
+  read/write/command execution, login reuse or Git merge is enabled.
+
+### Tests
+
+The new Go tests check official package identity, invalid paths,
+isolated credential filtering, no tool permission escalation,
+capability help/version, and failure on missing flags. Desktop API
+tests exercise confirmation and Web/cross-origin access guards.
+Chromium and WebKit check the CodeBuddy setup/probe panel while
+asserting no Run is started by probing.
