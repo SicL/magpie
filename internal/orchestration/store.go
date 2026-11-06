@@ -78,6 +78,14 @@ func Open(file string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := s.ensureRecoverySchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize recoveries: %w", err)
+	}
+	if err := s.ensureCheckpointSchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize checkpoints: %w", err)
+	}
 	if err := s.markPreviousRunsUncertain(); err != nil {
 		db.Close()
 		return nil, err
@@ -310,6 +318,13 @@ func (s *Store) DeleteTask(id string) error {
 	}
 	if linked > 0 {
 		return fmt.Errorf("%w: task has run history", ErrConflict)
+	}
+	var checkpoints int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM agent_checkpoints WHERE task_id=?", id).Scan(&checkpoints); err != nil {
+		return err
+	}
+	if checkpoints > 0 {
+		return fmt.Errorf("%w: task has checkpoints", ErrConflict)
 	}
 	res, err := s.db.Exec("DELETE FROM tasks WHERE id=? AND status IN ('pending','blocked','failed','done')", id)
 	if err != nil {

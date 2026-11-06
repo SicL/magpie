@@ -12,6 +12,11 @@ magpie.plugin("orchestration", (ctx) => {
   let projectForm = false;
   let taskForm = false;
   let busy = false;
+  let editingCheckpoint = "";
+  let recovering = "";
+  let showingHistory = "";
+  let checkpointRows = [];
+  let recoveryRows = [];
 
   function field(title, placeholder, value) {
     const box = el("label", "orch-field");
@@ -55,6 +60,7 @@ magpie.plugin("orchestration", (ctx) => {
       await work();
       projectForm = false;
       taskForm = false;
+      busy = false;
       await refresh();
     } catch (e) {
       status(e.message, "err");
@@ -113,6 +119,106 @@ magpie.plugin("orchestration", (ctx) => {
     actions.append(save, button("Cancel", () => { taskForm = false; render(); }));
     form.append(actions);
     return form;
+  }
+
+
+  function checkpointEditor(task, latestRun) {
+    const form=el("form","orch-form");
+    const title=el("label","orch-field");
+    title.append(el("span","",t("Checkpoint summary")));
+    const summary=el("textarea","set-field");
+    summary.rows=3;summary.maxLength=4000;
+    summary.placeholder=t("Describe progress, blockers and next steps");
+    summary.setAttribute("aria-label",t("Checkpoint summary"));
+    title.append(summary);form.append(title);
+    const result=el("label","orch-field");
+    result.append(el("span","",t("Checkpoint test result")));
+    const select=el("select","set-field");
+    select.setAttribute("aria-label",t("Checkpoint test result"));
+    for(const [value,text] of [["not_run","Tests not run"],["passed","Tests passed (self-reported)"],["failed","Tests failed (self-reported)"]]){
+      const opt=el("option","",t(text));opt.value=value;select.append(opt);
+    }
+    result.append(select);form.append(result);
+    const actions=el("div","orch-actions");
+    const save=button("Save checkpoint",()=>{});
+    save.type="submit";save.onclick=null;
+    form.onsubmit=(e)=>{
+      e.preventDefault();
+      perform(async()=>{
+        await api("orchestration/tasks/"+encodeURIComponent(task.id)+"/checkpoints",{
+          revision:task.revision,summary:summary.value,testStatus:select.value,
+          runId:latestRun?.id||""
+        });
+        editingCheckpoint="";
+        status(t("Checkpoint saved"),"ok");
+      });
+    };
+    actions.append(save,button("Cancel",()=>{editingCheckpoint="";render();}));
+    form.append(actions);
+    return form;
+  }
+
+  function recoveryEditor(task,run){
+    const form=el("form","orch-form");
+    form.append(el("p","orch-safety",t("A previous Agent run was interrupted. Inspect its process tree and Git changes first. Recovery does not stop processes.")));
+    const check=el("label","orch-confirm");
+    const checkbox=el("input");checkbox.type="checkbox";
+    check.append(checkbox,el("span","",t("I verified the old Agent and child processes have stopped and reviewed its Worktree.")));
+    form.append(check);
+    const reason=el("label","orch-field");
+    reason.append(el("span","",t("Recovery audit note")));
+    const note=el("textarea","set-field");
+    note.rows=3;note.maxLength=500;note.minLength=12;
+    note.setAttribute("aria-label",t("Recovery audit note"));
+    reason.append(note);form.append(reason);
+    const actions=el("div","orch-actions");
+    const save=button("Reconcile interrupted run",()=>{});
+    save.type="submit";save.onclick=null;
+    form.onsubmit=e=>{
+      e.preventDefault();
+      perform(async()=>{
+        await api("orchestration/runs/"+encodeURIComponent(run.id)+"/reconcile",{
+          revision:task.revision,verified:checkbox.checked,reason:note.value
+        });
+        recovering="";
+        status(t("Run reconciled; task remains blocked"),"ok");
+      });
+    };
+    actions.append(save,button("Cancel",()=>{recovering="";render();}));
+    form.append(actions);
+    return form;
+  }
+
+  async function openHandoffHistory(taskId){
+    await perform(async()=>{
+      checkpointRows=await api("orchestration/tasks/"+encodeURIComponent(taskId)+"/checkpoints");
+      recoveryRows=await api("orchestration/tasks/"+encodeURIComponent(taskId)+"/recoveries");
+      showingHistory=taskId;
+    });
+  }
+
+  async function copyHandoff(task,project,worktree,latestRun,clicked){
+    try{
+      const checkpoints=await api("orchestration/tasks/"+encodeURIComponent(task.id)+"/checkpoints");
+      const latest=checkpoints[0];
+      const lines=[
+        "Project: "+project.name,
+        "Task: "+task.title,
+        "Assigned agent: "+(task.agent||"unassigned"),
+        "Repository: "+project.repoPath,
+        "Worktree (task-scoped): "+worktree.path,
+        "Git branch: "+worktree.branch,
+        "Task state: "+task.status,
+        "Acceptance criteria: "+task.details,
+        "Latest checkpoint: "+(latest?.summary||"none"),
+        "Tests: "+(latest?.testStatus||"not_run"),
+        "Git HEAD: "+(latest?.gitHead||worktree.head||"unknown"),
+        "Uncommitted changes: "+(latest?.dirty?"yes":"unknown"),
+        "Native DSH session: "+(latestRun?.sessionId||"none"),
+        "Do not let multiple Agents write this same Worktree concurrently."
+      ];
+      await copy(lines.join("\n"),t("Task handoff"),clicked,t("Handoff copied"));
+    }catch(e){status(e.message,"err");}
   }
 
   function stateLabel(value) {
@@ -240,12 +346,52 @@ magpie.plugin("orchestration", (ctx) => {
             status(t("Worktree created"), "ok");
           })));
         }
+
+        if(isDSH && existing && q.status==="ready" && dshCapability?.available &&
+           latestRun?.sessionId && ["completed","failed","cancelled"].includes(latestRun.state)){
+          actions.append(button("Resume DSH session",()=>perform(async()=>{
+            await api("orchestration/tasks/"+encodeURIComponent(q.id)+"/resume",{
+              revision:q.revision,sourceRunId:latestRun.id
+            });
+            status(t("Native DSH session resumed"),"ok");
+          })));
+        }
+        if(existing) {
+          actions.append(button("Add checkpoint",()=>{editingCheckpoint=q.id;render();}));
+          actions.append(button("View handoff history",()=>openHandoffHistory(q.id)));
+          const handoffButton=button("Copy task handoff",()=>copyHandoff(q,active,existing,latestRun,handoffButton));
+          actions.append(handoffButton);
+        }
+        if(latestRun?.state==="interrupted" && q.status==="running"){
+          actions.append(button("Review interrupted run",()=>{recovering=q.id;render();}));
+        }
+
         if (["pending", "blocked", "failed", "done"].includes(q.status)) {
           actions.append(button("Remove task", () => perform(async () => {
             await api("orchestration/tasks/" + encodeURIComponent(q.id) + "/remove", {});
           }), "text"));
         }
         item.append(actions);
+        if (editingCheckpoint===q.id) item.append(checkpointEditor(q,latestRun));
+        if (recovering===q.id && latestRun?.state==="interrupted") item.append(recoveryEditor(q,latestRun));
+        if (showingHistory===q.id){
+          const history=el("div","orch-history");
+          history.append(el("b","",t("Task handoff checkpoints")));
+          if(!checkpointRows.length) history.append(el("p","orch-empty",t("No checkpoints yet")));
+          for(const c of checkpointRows){
+            const entry=el("div","orch-history-entry");
+            entry.append(el("span","",c.createdAt+" · "+c.testStatus+" · "+c.gitHead.slice(0,10)+(c.dirty?" · "+t("Uncommitted Worktree changes"):"")));
+            entry.append(el("p","",c.summary));
+            history.append(entry);
+          }
+          for(const r of recoveryRows){
+            const entry=el("div","orch-history-entry");
+            entry.append(el("span","",t("Manual recovery")+" · "+r.createdAt));
+            entry.append(el("p","",r.reason));
+            history.append(entry);
+          }
+          item.append(history);
+        }
         right.append(item);
       }
       if (!tasks.length && !web) {

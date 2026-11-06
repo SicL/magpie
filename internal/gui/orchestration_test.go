@@ -93,6 +93,33 @@ func TestOrchestrationAPIProjectsAndTasks(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("update task %d %s", code, body)
 	}
+
+	// Persist and enumerate a human handoff checkpoint at the current task revision.
+	var current orchestration.Task
+	if err = json.Unmarshal(body, &current); err != nil {
+		t.Fatal(err)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/tasks/"+task.ID+"/checkpoints", map[string]any{"revision": current.Revision, "summary": "Reviewed changes; tests still pending", "testStatus": "not_run"})
+	if code != http.StatusCreated {
+		t.Fatalf("create checkpoint %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/tasks/"+task.ID+"/checkpoints", nil)
+	if code != http.StatusOK {
+		t.Fatalf("list checkpoints %d %s", code, body)
+	}
+	var checkpoints []orchestration.Checkpoint
+	if err = json.Unmarshal(body, &checkpoints); err != nil || len(checkpoints) != 1 {
+		t.Fatalf("checkpoint list %+v %v", checkpoints, err)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/tasks/"+task.ID+"/checkpoints", map[string]any{"revision": task.Revision, "summary": "stale revision", "testStatus": "not_run"})
+	if code != http.StatusConflict {
+		t.Fatalf("stale checkpoint accepted %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/tasks/"+task.ID+"/recoveries", nil)
+	if code != http.StatusOK || string(bytes.TrimSpace(body)) != "[]" {
+		t.Fatalf("unexpected recovery history %d %s", code, body)
+	}
+
 	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/tasks/"+task.ID+"/status", map[string]any{"revision": task.Revision, "status": "blocked"})
 	if code != 409 {
 		t.Fatalf("stale task should conflict: %d %s", code, body)
@@ -139,6 +166,18 @@ func TestOrchestrationReadOnlyWebBlocksWrites(t *testing.T) {
 	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/runs/untrusted/log", nil)
 	if code != http.StatusForbidden {
 		t.Fatalf("browser must not read agent logs: %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/tasks/fake/checkpoints", map[string]any{"revision": 1, "summary": "x", "testStatus": "not_run"})
+	if code != http.StatusForbidden {
+		t.Fatalf("browser created checkpoint %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/tasks/fake/resume", map[string]any{"revision": 1, "sourceRunId": "fake"})
+	if code != http.StatusForbidden {
+		t.Fatalf("browser resumed agent %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", "/api/orchestration/runs/fake/reconcile", map[string]any{"revision": 1, "verified": true, "reason": "process stopped and reviewed"})
+	if code != http.StatusForbidden {
+		t.Fatalf("browser reconciled agent %d %s", code, body)
 	}
 	code, body = orchestrationRequest(t, mux, "GET", "/api/orchestration/projects", nil)
 	if code != http.StatusOK || string(bytes.TrimSpace(body)) != "[]" {

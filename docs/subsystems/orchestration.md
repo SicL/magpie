@@ -1,6 +1,6 @@
 # Projects & Tasks orchestration subsystem
 
-> Implemented scope: P1 project/task registry and P2 manual Git Worktree creation (not Agent execution).
+> Implemented scope: P1/P2 registry and Worktree, P3 DSH execution, P4 checkpoints, continuation and audited manual recovery.
 > Initial release: opt-in built-in plugin. See [design proposal](../proposals/multi-agent-orchestration-plan.md).
 
 ## Responsibilities and boundaries
@@ -134,3 +134,64 @@ No process is automatically launched from a user-created task. No task
 is automatically merged to Git main or submitted as an MR. Automated
 credential handling, process crash reconciliation and real Linux/macOS
 tree supervision still require separate review and verification.
+
+## P4 native DSH continuation and cross-Agent handoff
+
+P4 builds on P3. Registry, Worktree, tasks, Runs and checkpoints remain
+separate from Magpie's model gateway and Agents' own configuration stores.
+
+### Checkpoints
+
+- An operator creates a checkpoint through POST /api/orchestration/tasks/{id}/checkpoints
+  with current task revision, 1-4000 character summary, and test status
+  not_run, passed or failed. Passed is a **self-reported assertion**, not
+  verification by Magpie or CI.
+- The server records Git HEAD and whether the task-specific Worktree has
+  uncommitted changes. It does not modify tracked source or store filenames.
+- Checkpoints live in the agent_checkpoints SQLite table, independent of
+  Run logs. An optional Run reference must belong to the same task and
+  Worktree. GET endpoints retrieve checkpoint and recovery histories.
+- Desktop Copy task handoff includes task description, Worktree/branch and
+  the latest checkpoint. The user deliberately pastes this into WorkBuddy,
+  ZCode or another Agent. Magpie does not upload it automatically.
+
+### DSH native continuation
+
+- The source Run must be the latest terminal completed/failed/cancelled DSH
+  Run for the same task and exact Worktree, with a valid stored sessionId.
+- After manually returning the workflow to ready, POST
+  /api/orchestration/tasks/{id}/resume accepts only a local sourceRunId.
+  It does not accept an arbitrary native session ID or shell arguments.
+- The adapter sends --session-id plus the recorded ID to DSH, with task
+  instructions and latest checkpoint via stdin. It creates a new Run with
+  resumeOf pointing to the source record; prior Runs stay unchanged.
+- Interrupted, reconciled, other-task and stale/older sessions cannot be
+  resumed. No automatic retry, merge or acceptance is performed.
+
+### Interrupted-run reconciliation
+
+- Supervisor restart leaves uncertain Runs interrupted and locked.
+- POST /api/orchestration/runs/{id}/reconcile requires desktop mode, a
+  current revision, explicit human attestation and a 12-500 character audit
+  reason. It never terminates a process.
+- Platform process APIs check the old PID. Active, unknown or inaccessible
+  processes fail closed; recycled PIDs are treated as potentially live.
+- With an absent process and the operator's explicit confirmation that
+  its children stopped, the original Worktree is inspected. agent_recoveries
+  stores Git HEAD, dirty flag, old PID, note and timestamp.
+- The old Run becomes reconciled and the task becomes blocked, **not ready**.
+  A separate manual decision must make the task ready before another Agent
+  can start. A reconciled DSH session cannot be resumed directly.
+- Parent PID absence does not prove every grandchild/external command
+  stopped. The operator must verify that. Never kill by global PID pattern.
+
+### Provider boundaries
+
+On the checked GTR installation, WorkBuddy 5.9.3 and ZCode 3.17.2 are
+desktop apps without a validated headless CLI on PATH. A separate
+CodeBuddy Code CLI and ZCode CLI provide documented noninteractive
+interfaces, but integration/authentication with the installed desktop
+app is not verified. For now, WorkBuddy/ZCode use manual handoff only.
+
+All new mutating P4 routes require the existing desktop JSON and
+cross-origin controls; browser mode remains read-only.
