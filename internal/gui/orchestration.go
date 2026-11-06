@@ -210,6 +210,103 @@ func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.S
 		writeJSON(rw, map[string]bool{"stopping": true})
 	})
 
+	mux.HandleFunc("GET /api/orchestration/tasks/{id}/checkpoints", func(rw http.ResponseWriter, r *http.Request) {
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		rows, err := s.Checkpoints(r.PathValue("id"))
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, rows)
+	})
+	mux.HandleFunc("POST /api/orchestration/tasks/{id}/checkpoints", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Revision   int64  `json:"revision"`
+			Summary    string `json:"summary"`
+			TestStatus string `json:"testStatus"`
+			RunID      string `json:"runId"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		result, err := s.CreateCheckpoint(orchestration.CheckpointInput{TaskID: r.PathValue("id"), Revision: input.Revision, Summary: input.Summary, TestStatus: input.TestStatus, RunID: input.RunID})
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		rw.WriteHeader(http.StatusCreated)
+		writeJSON(rw, result)
+	})
+	mux.HandleFunc("GET /api/orchestration/tasks/{id}/recoveries", func(rw http.ResponseWriter, r *http.Request) {
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		items, err := s.Recoveries(r.PathValue("id"))
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, items)
+	})
+	mux.HandleFunc("POST /api/orchestration/tasks/{id}/resume", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Revision    int64  `json:"revision"`
+			SourceRunID string `json:"sourceRunId"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		runner, ok := runService(rw)
+		if !ok {
+			return
+		}
+		item, err := runner.Resume(r.PathValue("id"), input.Revision, input.SourceRunID)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		rw.WriteHeader(http.StatusCreated)
+		writeJSON(rw, item)
+	})
+	mux.HandleFunc("POST /api/orchestration/runs/{id}/reconcile", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var in orchestration.RecoveryInput
+		if err := orchestrationReadJSON(rw, r, &in); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		runner, ok := runService(rw)
+		if !ok {
+			return
+		}
+		item, err := runner.ResolveInterrupted(r.PathValue("id"), in)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, item)
+	})
+
 	mux.HandleFunc("GET /api/orchestration/projects", func(rw http.ResponseWriter, r *http.Request) {
 		s, ok := db(rw)
 		if !ok {

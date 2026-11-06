@@ -64,12 +64,13 @@ func DetectDSH() Capability {
 }
 
 type RunService struct {
-	store   *Store
-	command func() (string, []string, error)
-	env     []string
-	mu      sync.Mutex
-	active  map[string]*liveRun
-	wait    sync.WaitGroup
+	store       *Store
+	command     func() (string, []string, error)
+	env         []string
+	processGone func(int) (bool, error)
+	mu          sync.Mutex
+	active      map[string]*liveRun
+	wait        sync.WaitGroup
 }
 
 type liveRun struct {
@@ -78,7 +79,7 @@ type liveRun struct {
 }
 
 func NewRunService(store *Store) *RunService {
-	return &RunService{store: store, command: dshCommand, active: make(map[string]*liveRun)}
+	return &RunService{store: store, command: dshCommand, processGone: previousProcessGone, active: make(map[string]*liveRun)}
 }
 
 const maxOutputBytes = 2 * 1024 * 1024
@@ -92,17 +93,21 @@ var secretParts = []*regexp.Regexp{
 	regexp.MustCompile("(?i)((?:api[_-]?key|access[_-]?token)[[:space:]]*[:=][[:space:]]*[\"']?)[A-Za-z0-9_./+=:-]{12,}"),
 }
 
-// lineLog is a bounded, best-effort redacted stream. Never store the task's
-// prompt; structured events still may contain sensitive project data and
-// logs stay local and inaccessible from Magpie's browser mode.
+// lineLog keeps separate stdout/stderr buffers, so tool diagnostics or an
+// arbitrary stderr line cannot invent the native DSH session for resumption.
 type lineLog struct {
-	mu        sync.Mutex
-	file      *os.File
-	pending   []byte
-	written   int
-	truncated bool
-	onSession func(string)
+	mu            sync.Mutex
+	file          *os.File
+	stdoutPending []byte
+	stderrPending []byte
+	written       int
+	truncated     bool
+	onSession     func(string)
 }
+
+type agentStderr struct{ log *lineLog }
+
+func (s agentStderr) Write(p []byte) (int, error) { return s.log.writeStream(p, false) }
 
 func sanitizeLog(line string) string {
 	for i, re := range secretParts {
@@ -116,18 +121,16 @@ func sanitizeLog(line string) string {
 	return line
 }
 
-func (w *lineLog) flushLine(line []byte) error {
+func (w *lineLog) flushLine(line []byte, fromStdout bool) error {
 	if w.truncated {
 		return nil
 	}
-
-	if w.onSession != nil {
+	if fromStdout && w.onSession != nil {
 		var evt map[string]string
 		if json.Unmarshal(line, &evt) == nil && evt["type"] == "session" && sessionIDPattern.MatchString(evt["sessionId"]) {
 			w.onSession(evt["sessionId"])
 		}
 	}
-
 	clean := []byte(sanitizeLog(string(line)))
 	if len(clean)+w.written > maxOutputBytes {
 		remaining := maxOutputBytes - w.written
@@ -145,30 +148,36 @@ func (w *lineLog) flushLine(line []byte) error {
 	return err
 }
 
-func (w *lineLog) Write(p []byte) (int, error) {
+func (w *lineLog) Write(p []byte) (int, error) { return w.writeStream(p, true) }
+
+func (w *lineLog) writeStream(p []byte, fromStdout bool) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	original := len(p)
+	pending := &w.stdoutPending
+	if !fromStdout {
+		pending = &w.stderrPending
+	}
 	for len(p) > 0 {
-		size := maxLineBytes - len(w.pending)
+		size := maxLineBytes - len(*pending)
 		if size <= 0 {
-			if err := w.flushLine(w.pending); err != nil {
+			if err := w.flushLine(*pending, fromStdout); err != nil {
 				return 0, err
 			}
-			w.pending = nil
+			*pending = nil
 			size = maxLineBytes
 		}
 		i := strings.IndexByte(string(p[:min(size, len(p))]), '\n')
 		if i >= 0 {
-			w.pending = append(w.pending, p[:i+1]...)
+			*pending = append(*pending, p[:i+1]...)
 			p = p[i+1:]
-			if err := w.flushLine(w.pending); err != nil {
+			if err := w.flushLine(*pending, fromStdout); err != nil {
 				return 0, err
 			}
-			w.pending = nil
+			*pending = nil
 		} else {
 			n := min(size, len(p))
-			w.pending = append(w.pending, p[:n]...)
+			*pending = append(*pending, p[:n]...)
 			p = p[n:]
 		}
 	}
@@ -178,8 +187,13 @@ func (w *lineLog) Write(p []byte) (int, error) {
 func (w *lineLog) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.pending) > 0 {
-		if err := w.flushLine(w.pending); err != nil {
+	if len(w.stdoutPending) > 0 {
+		if err := w.flushLine(w.stdoutPending, true); err != nil {
+			return err
+		}
+	}
+	if len(w.stderrPending) > 0 {
+		if err := w.flushLine(w.stderrPending, false); err != nil {
 			return err
 		}
 	}
@@ -227,6 +241,16 @@ func (s *Store) logFile(id string) (string, error) {
 }
 
 func (r *RunService) Start(taskID string, revision int64) (Run, error) {
+	return r.start(taskID, revision, "")
+}
+
+// Resume makes a separate Run that continues a previously recorded DSH
+// session. It never adopts an unknown session ID or runs automatically.
+func (r *RunService) Resume(taskID string, revision int64, sourceRunID string) (Run, error) {
+	return r.start(taskID, revision, sourceRunID)
+}
+
+func (r *RunService) start(taskID string, revision int64, sourceRunID string) (Run, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.active) >= 3 {
@@ -246,17 +270,41 @@ func (r *RunService) Start(taskID string, revision int64) (Run, error) {
 	if err != nil {
 		return Run{}, err
 	}
+	var source Run
+	if sourceRunID != "" {
+		source, err = r.store.resumeSource(taskID, sourceRunID, cwd)
+		if err != nil {
+			return Run{}, err
+		}
+	}
 	executable, args, err := r.command()
 	if err != nil {
 		return Run{}, err
+	}
+	if sourceRunID != "" {
+		if len(args) == 0 || args[len(args)-1] != "-" {
+			return Run{}, fmt.Errorf("%w: DSH CLI does not accept stdin task", ErrInvalid)
+		}
+		args = append(append(append([]string{}, args[:len(args)-1]...), "--session-id", source.SessionID), "-")
 	}
 	if executable == "" {
 		return Run{}, fmt.Errorf("%w: CLI path is empty", ErrInvalid)
 	}
 	prompt := "Task: " + t.Title + "\n" + t.Details + "\nWorking directory: " + cwd + "\nRead project rules before changes. Do not operate outside this task Worktree. Record changes and verification results."
-	// Only a digest of task input is retained in memory, never in run logs.
+	// The new process sees the original task and any latest manual checkpoint
+	// while DSH restores the native session context via --session-id.
+	if sourceRunID != "" {
+		prompt = "Continue task in the same Git Worktree.\n" + prompt
+		checkpoints, e := r.store.Checkpoints(taskID)
+		if e != nil {
+			return Run{}, e
+		}
+		if len(checkpoints) > 0 {
+			prompt += "\nLatest checkpoint: " + checkpoints[0].Summary
+		}
+	}
 
-	run, err := r.store.reserveRun(t, revision, cwd)
+	run, err := r.store.reserveRun(t, revision, cwd, sourceRunID)
 	if err != nil {
 		return Run{}, err
 	}
@@ -279,7 +327,7 @@ func (r *RunService) Start(taskID string, revision int64) (Run, error) {
 		cmd.Env = append(os.Environ(), r.env...)
 	}
 	cmd.Stdout = writer
-	cmd.Stderr = writer
+	cmd.Stderr = agentStderr{log: writer}
 	tree, err := proc.StartTree(cmd)
 	if err != nil {
 		_ = writer.Close()
@@ -395,4 +443,34 @@ func (s *Store) RunLog(id string) (string, error) {
 	}
 	b, err := io.ReadAll(io.LimitReader(f, 32*1024))
 	return string(b), err
+}
+
+// ResolveInterrupted does not stop or claim an old process. It requires an
+// explicit local operator attestation, checks that the old PID is absent,
+// audits the Git snapshot and leaves the workflow blocked for review.
+func (r *RunService) ResolveInterrupted(id string, in RecoveryInput) (Recovery, error) {
+	reason := strings.TrimSpace(in.Reason)
+	if !in.Verified || len(reason) < 12 || len(reason) > 500 || in.Revision <= 0 {
+		return Recovery{}, fmt.Errorf("%w: attest that old Agent and its children stopped, with a reason (12-500 chars)", ErrInvalid)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, owned := r.active[id]; owned {
+		return Recovery{}, fmt.Errorf("%w: old Run is still owned by current supervisor", ErrConflict)
+	}
+	old, err := r.store.Run(id)
+	if err != nil {
+		return Recovery{}, err
+	}
+	if old.State != "interrupted" {
+		return Recovery{}, fmt.Errorf("%w: only interrupted runs can be reconciled", ErrConflict)
+	}
+	dead, err := r.processGone(old.PID)
+	if err != nil {
+		return Recovery{}, err
+	}
+	if !dead {
+		return Recovery{}, fmt.Errorf("%w: old process ID is still running; inspect its process tree first", ErrConflict)
+	}
+	return r.store.recoverRun(old, in.Revision, reason)
 }

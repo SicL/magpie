@@ -33,6 +33,36 @@ function serve(lang, data) {
    }
    return json(data.tasks);
   }
+
+  if(url.pathname==="/api/copy"){data.copied=req.postDataJSON().text;return json({ok:true});}
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/checkpoints"){
+   if(req.method()==="POST"){
+    const v=req.postDataJSON();
+    const c={id:"cp1",taskId:data.tasks[0].id,summary:v.summary,testStatus:v.testStatus,gitHead:"f".repeat(40),dirty:false,createdAt:"2026-11-06T11:00:00Z"};
+    data.checkpoints.unshift(c);
+    return json(c,201);
+   }
+   return json(data.checkpoints);
+  }
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/recoveries") return json(data.recoveries);
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/resume"){
+   const v=req.postDataJSON();
+   const run={id:"00112233aabbccddeeff001122334455",taskId:data.tasks[0].id,resumeOf:v.sourceRunId,
+    adapter:"deepseek-harness",state:"running",pid:234,worktreePath:data.worktrees[0].path,sessionId:"session-fixture-001"};
+   data.runs.unshift(run);data.tasks[0].status="running";data.tasks[0].revision++;
+   return json(run,201);
+  }
+  if(url.pathname==="/api/orchestration/runs/00112233aabbccddeeff001122334455/reconcile"){
+   const v=req.postDataJSON();
+   const rec={id:"recovery-1",runId:data.runs[0].id,taskId:data.tasks[0].id,reason:v.reason,
+     createdAt:"2026-11-06T11:05:00Z",gitHead:"f".repeat(40),dirty:false};
+   data.recoveries.unshift(rec);
+   data.runs[0].state="reconciled";
+   data.tasks[0].status="blocked";
+   data.tasks[0].revision++;
+   return json(rec);
+  }
+
   if(url.pathname==="/api/orchestration/agents/dsh") return json({adapter:"deepseek-harness",available:true,version:"fixture"});
   if(url.pathname==="/api/orchestration/runs") return json(data.runs);
   if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/status") {
@@ -70,7 +100,7 @@ for(const engine of ["chromium","webkit"]){
   t.after(()=>ctx.close());
   const page=await ctx.newPage();
   page.setDefaultTimeout(9000);
-  const data={projects:[],tasks:[],worktrees:[],runs:[]};
+  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],copied:""};
   await page.route("**/*",serve("zh",data));
   await page.goto("http://magpie.test/?view=orchestration");
   await page.locator("#view-orchestration .orch-head").waitFor({timeout:10000});
@@ -92,6 +122,17 @@ for(const engine of ["chromium","webkit"]){
   assert.equal(data.projects.length,1);
   assert.equal(data.tasks.length,1);
   assert.equal(data.worktrees.length,1);
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"新增检查点"}).click();
+  await page.locator("#view-orchestration .orch-task").getByRole("textbox",{name:"检查点摘要"}).fill("Reviewed interface and tests");
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"保存检查点"}).click();
+  assert.equal(data.checkpoints.length,1);
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"查看交接历史"}).click();
+  assert.match(await page.locator("#view-orchestration .orch-history").innerText(),/Reviewed interface and tests/);
+  await Promise.all([
+    page.waitForResponse(r=>r.url().endsWith("/api/copy")),
+    page.locator("#view-orchestration .orch-task").getByRole("button",{name:"复制任务交接信息"}).click()
+  ]);
+  assert.match(data.copied,/Worktree \(task-scoped\)/);
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"标记就绪"}).click();
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"启动 DeepSeek Harness"}).click();
   await page.locator("#view-orchestration .orch-run-summary").waitFor();
@@ -100,6 +141,21 @@ for(const engine of ["chromium","webkit"]){
   assert.match(await page.locator("#view-orchestration .orch-log").innerText(),/fixture safe log line/);
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"停止此 Agent 运行"}).click();
   assert.equal(data.runs[0].state,"stopping");
+  data.runs[0].state="completed";data.runs[0].sessionId="session-fixture-001";
+  data.tasks[0].status="review";data.tasks[0].revision++;
+  await page.locator("#view-orchestration .orch-head").getByRole("button",{name:"刷新任务状态"}).click();
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"标记就绪"}).click();
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"续接 DSH 会话"}).click();
+  assert.equal(data.runs.length,2);
+  assert.equal(data.runs[0].resumeOf,data.runs[1].id);
+  data.runs[0].state="interrupted";
+  await page.locator("#view-orchestration .orch-head").getByRole("button",{name:"刷新任务状态"}).click();
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"核验中断运行"}).click();
+  await page.locator("#view-orchestration .orch-confirm input").check();
+  await page.locator("#view-orchestration .orch-task").getByRole("textbox",{name:"恢复核验备注"}).fill("Confirmed old process tree stopped and Git worktree reviewed");
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"核销中断运行"}).click();
+  assert.equal(data.recoveries.length,1);
+  assert.equal(data.tasks[0].status,"blocked");
   await page.setViewportSize({width:420,height:740});
   const sizing=await page.locator("#view-orchestration .orch-grid").evaluate((node)=>({width:node.clientWidth,scroll:node.scrollWidth}));
   assert.ok(sizing.scroll<=sizing.width+2, "narrow layout overflow: "+JSON.stringify(sizing));

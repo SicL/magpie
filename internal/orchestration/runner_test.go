@@ -16,7 +16,12 @@ func TestRunnerHelperProcess(t *testing.T) {
 	if mode == "" {
 		return
 	}
-	_, _ = io.ReadAll(os.Stdin)
+	input, _ := io.ReadAll(os.Stdin)
+	if capture := os.Getenv("MAGPIE_TEST_CAPTURE_STDIN"); capture != "" {
+		if err := os.WriteFile(capture, input, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	switch mode {
 	case "complete":
 		fmt.Println("{\"type\":\"session\",\"sessionId\":\"session-fixture-001\"}")

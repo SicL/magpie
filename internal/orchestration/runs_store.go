@@ -14,6 +14,7 @@ type Run struct {
 	TaskID       string `json:"taskId"`
 	Adapter      string `json:"adapter"`
 	SessionID    string `json:"sessionId,omitempty"`
+	ResumeOf     string `json:"resumeOf,omitempty"`
 	State        string `json:"state"`
 	PID          int    `json:"pid"`
 	WorktreePath string `json:"worktreePath"`
@@ -27,7 +28,7 @@ const adapterDSH = "deepseek-harness"
 
 func (s *Store) ensureRunSchema() error {
 	for _, q := range []string{
-		"CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT, adapter TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '', state TEXT NOT NULL, pid INTEGER NOT NULL DEFAULT 0, worktree_path TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT NOT NULL DEFAULT '', exit_code INTEGER, failure TEXT NOT NULL DEFAULT '')",
+		"CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT, adapter TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '', resume_of TEXT NOT NULL DEFAULT '', state TEXT NOT NULL, pid INTEGER NOT NULL DEFAULT 0, worktree_path TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT NOT NULL DEFAULT '', exit_code INTEGER, failure TEXT NOT NULL DEFAULT '')",
 		"CREATE INDEX IF NOT EXISTS agent_runs_task ON agent_runs(task_id,started_at)",
 		"CREATE UNIQUE INDEX IF NOT EXISTS agent_runs_active ON agent_runs(task_id) WHERE state IN ('starting','running','stopping','interrupted')",
 	} {
@@ -35,7 +36,10 @@ func (s *Store) ensureRunSchema() error {
 			return fmt.Errorf("initialize agent runs: %w", err)
 		}
 	}
-	return s.ensureSessionColumn()
+	if err := s.ensureSessionColumn(); err != nil {
+		return err
+	}
+	return s.ensureResumeColumn()
 }
 
 // An agent belonging to the previous process may still exist after a crash.
@@ -49,7 +53,7 @@ func (s *Store) markPreviousRunsUncertain() error {
 func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 	var r Run
 	var code sql.NullInt64
-	err := row.Scan(&r.ID, &r.TaskID, &r.Adapter, &r.SessionID, &r.State, &r.PID, &r.WorktreePath, &r.StartedAt, &r.FinishedAt, &code, &r.Failure)
+	err := row.Scan(&r.ID, &r.TaskID, &r.Adapter, &r.SessionID, &r.ResumeOf, &r.State, &r.PID, &r.WorktreePath, &r.StartedAt, &r.FinishedAt, &code, &r.Failure)
 	if err != nil {
 		return Run{}, err
 	}
@@ -64,7 +68,7 @@ func (s *Store) Runs(taskID string) ([]Run, error) {
 	if strings.TrimSpace(taskID) == "" {
 		return nil, fmt.Errorf("%w: task required", ErrInvalid)
 	}
-	rows, err := s.db.Query("SELECT id,task_id,adapter,session_id,state,pid,worktree_path,started_at,finished_at,exit_code,failure FROM agent_runs WHERE task_id=? ORDER BY started_at DESC,id DESC", taskID)
+	rows, err := s.db.Query("SELECT id,task_id,adapter,session_id,resume_of,state,pid,worktree_path,started_at,finished_at,exit_code,failure FROM agent_runs WHERE task_id=? ORDER BY started_at DESC,id DESC", taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +85,7 @@ func (s *Store) Runs(taskID string) ([]Run, error) {
 }
 
 func (s *Store) Run(id string) (Run, error) {
-	r, err := scanRun(s.db.QueryRow("SELECT id,task_id,adapter,session_id,state,pid,worktree_path,started_at,finished_at,exit_code,failure FROM agent_runs WHERE id=?", id))
+	r, err := scanRun(s.db.QueryRow("SELECT id,task_id,adapter,session_id,resume_of,state,pid,worktree_path,started_at,finished_at,exit_code,failure FROM agent_runs WHERE id=?", id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, ErrNotFound
 	}
@@ -90,7 +94,11 @@ func (s *Store) Run(id string) (Run, error) {
 
 // reserveRun is a transaction: a task cannot become running without its
 // durable run record, and two concurrent requests cannot claim one task.
-func (s *Store) reserveRun(t Task, revision int64, worktree string) (Run, error) {
+func (s *Store) reserveRun(t Task, revision int64, worktree string, source ...string) (Run, error) {
+	resumeOf := ""
+	if len(source) > 0 {
+		resumeOf = source[0]
+	}
 	id, err := newID()
 	if err != nil {
 		return Run{}, err
@@ -111,8 +119,8 @@ func (s *Store) reserveRun(t Task, revision int64, worktree string) (Run, error)
 	if n != 1 {
 		return Run{}, ErrConflict
 	}
-	r := Run{ID: id, TaskID: t.ID, Adapter: adapterDSH, State: "starting", WorktreePath: worktree, StartedAt: now()}
-	_, err = tx.Exec("INSERT INTO agent_runs (id,task_id,adapter,state,pid,worktree_path,started_at) VALUES(?,?,?,?,?,?,?)", r.ID, r.TaskID, r.Adapter, r.State, 0, r.WorktreePath, r.StartedAt)
+	r := Run{ID: id, TaskID: t.ID, Adapter: adapterDSH, ResumeOf: resumeOf, State: "starting", WorktreePath: worktree, StartedAt: now()}
+	_, err = tx.Exec("INSERT INTO agent_runs (id,task_id,adapter,resume_of,state,pid,worktree_path,started_at) VALUES(?,?,?,?,?,?,?,?)", r.ID, r.TaskID, r.Adapter, r.ResumeOf, r.State, 0, r.WorktreePath, r.StartedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return Run{}, ErrConflict
@@ -198,7 +206,7 @@ func (s *Store) ProjectRuns(projectID string) ([]Run, error) {
 	if strings.TrimSpace(projectID) == "" {
 		return nil, fmt.Errorf("%w: project required", ErrInvalid)
 	}
-	rows, err := s.db.Query("SELECT r.id,r.task_id,r.adapter,r.session_id,r.state,r.pid,r.worktree_path,r.started_at,r.finished_at,r.exit_code,r.failure FROM agent_runs r JOIN tasks t ON r.task_id=t.id WHERE t.project_id=? ORDER BY r.started_at DESC,r.id DESC", projectID)
+	rows, err := s.db.Query("SELECT r.id,r.task_id,r.adapter,r.session_id,r.resume_of,r.state,r.pid,r.worktree_path,r.started_at,r.finished_at,r.exit_code,r.failure FROM agent_runs r JOIN tasks t ON r.task_id=t.id WHERE t.project_id=? ORDER BY r.started_at DESC,r.id DESC", projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -254,4 +262,63 @@ func (s *Store) ensureSessionColumn() error {
 	}
 	_, err = s.db.Exec("ALTER TABLE agent_runs ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
 	return err
+}
+
+// Migration is additive. P3 databases have session_id but not resume_of.
+func (s *Store) ensureResumeColumn() error {
+	rows, err := s.db.Query("PRAGMA table_info(agent_runs)")
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var position, required, pk int
+		var name, kind string
+		var def sql.NullString
+		if err := rows.Scan(&position, &name, &kind, &required, &def, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "resume_of" {
+			found = true
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = s.db.Exec("ALTER TABLE agent_runs ADD COLUMN resume_of TEXT NOT NULL DEFAULT ''")
+	return err
+}
+
+// resumeSource must be the latest terminal DSH run for this same task and
+// exact Worktree. The caller supplies only a recorded Run ID, never an
+// arbitrary session ID or foreign path as a CLI argument.
+func (s *Store) resumeSource(taskID, sourceID, worktree string) (Run, error) {
+	if sourceID == "" {
+		return Run{}, fmt.Errorf("%w: resume run ID required", ErrInvalid)
+	}
+	src, err := s.Run(sourceID)
+	if err != nil {
+		return Run{}, err
+	}
+	if src.TaskID != taskID || src.Adapter != adapterDSH || src.WorktreePath != worktree ||
+		(src.State != "completed" && src.State != "failed" && src.State != "cancelled") ||
+		!sessionIDPattern.MatchString(src.SessionID) {
+		return Run{}, fmt.Errorf("%w: source run cannot be resumed in this task", ErrConflict)
+	}
+	var latest string
+	if err = s.db.QueryRow("SELECT id FROM agent_runs WHERE task_id=? ORDER BY started_at DESC,id DESC LIMIT 1", taskID).Scan(&latest); err != nil {
+		return Run{}, err
+	}
+	if latest != src.ID {
+		return Run{}, fmt.Errorf("%w: only the latest run can be resumed", ErrConflict)
+	}
+	return src, nil
 }

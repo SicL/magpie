@@ -32,6 +32,7 @@ func TestRunSessionColumnMigratesInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
+	resumed := false
 	for rows.Next() {
 		var position, required, pk int
 		var name, kind string
@@ -42,12 +43,15 @@ func TestRunSessionColumnMigratesInPlace(t *testing.T) {
 		if name == "session_id" {
 			found = true
 		}
+		if name == "resume_of" {
+			resumed = true
+		}
 	}
 	if err = rows.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if !found {
-		t.Fatal("existing run table did not gain session ID")
+	if !found || !resumed {
+		t.Fatal("existing run table did not gain session and resume columns")
 	}
 	if err = store.ensureRunSchema(); err != nil {
 		t.Fatalf("repeat migration: %v", err)
