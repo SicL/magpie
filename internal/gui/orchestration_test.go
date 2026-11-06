@@ -364,3 +364,47 @@ process.exit(7);`
 		}
 	}
 }
+
+func TestZCodeLocalModelRoutesAndBrowserGuards(t *testing.T) {
+	s, err := orchestration.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	mux := http.NewServeMux()
+	mountOrchestrationRoutes(mux, func() (*orchestration.Store, error) { return s, nil }, false)
+	route := "/api/orchestration/agents/zcode/local-model"
+	code, body := orchestrationRequest(t, mux, "GET", route, nil)
+	if code != http.StatusOK {
+		t.Fatalf("get empty local model %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", route, map[string]any{"baseUrl": "https://api.example.com/v1", "modelId": "secret"})
+	if code != http.StatusBadRequest {
+		t.Fatalf("remote endpoint accepted: %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", route, map[string]any{"baseUrl": "http://127.0.0.1:1234/v1", "modelId": "local-qwen"})
+	if code != http.StatusOK {
+		t.Fatalf("local model save failed %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "GET", route, nil)
+	if code != http.StatusOK || !bytes.Contains(body, []byte("local-qwen")) {
+		t.Fatalf("model not persisted %d %s", code, body)
+	}
+	webOnly := http.NewServeMux()
+	mountOrchestrationRoutes(webOnly, func() (*orchestration.Store, error) { return s, nil }, true)
+	for _, method := range []string{"GET", "POST"} {
+		code, body = orchestrationRequest(t, webOnly, method, route, map[string]any{"baseUrl": "http://127.0.0.1:1234/v1", "modelId": "x"})
+		if code != http.StatusForbidden {
+			t.Fatalf("Web mode accessed model config %s %d %s", method, code, body)
+		}
+	}
+	req := httptest.NewRequest("POST", route, bytes.NewBufferString(`{"baseUrl":"http://127.0.0.1:1234/v1","modelId":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://untrusted.example")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("cross-site model config accepted %d", recorder.Code)
+	}
+}

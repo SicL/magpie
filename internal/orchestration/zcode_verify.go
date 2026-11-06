@@ -102,7 +102,7 @@ func (s *Store) requireZCodeVerified(taskID, path string) error {
 	if parseErr != nil || time.Since(when) < 0 || time.Since(when) > 15*time.Minute {
 		return fmt.Errorf("%w: ZCode plan model verification expired; repeat canary", ErrConflict)
 	}
-	actual, err := executableDigest(valid)
+	actual, err := s.zcodeModelFingerprint(valid)
 	if err != nil {
 		return fmt.Errorf("%w: cannot hash configured ZCode CLI: %v", ErrConflict, err)
 	}
@@ -170,11 +170,19 @@ func (s *Store) VerifyZCodeModel(taskID string, revision int64) (ZCodeVerificati
 	if err != nil {
 		return ZCodeVerification{}, err
 	}
+	initialHash, err := s.zcodeModelFingerprint(path)
+	if err != nil {
+		return ZCodeVerification{}, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	cmd := proc.Command(exe, args...)
 	cmd.Dir = cwd
-	cmd.Env = zcodeSafeEnvironment(home)
+	env, e := s.zcodeEnvironment(home)
+	if e != nil {
+		return ZCodeVerification{}, e
+	}
+	cmd.Env = env
 	var stdout, stderr boundedOutput
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -216,7 +224,10 @@ func (s *Store) VerifyZCodeModel(taskID string, revision int64) (ZCodeVerificati
 	if !found {
 		return ZCodeVerification{}, fmt.Errorf("%w: no positive ZCode model result event", ErrConflict)
 	}
-	sha, err := executableDigest(path)
+	sha, err := s.zcodeModelFingerprint(path)
+	if sha != initialHash {
+		return ZCodeVerification{}, fmt.Errorf("%w: ZCode model changed during verification", ErrConflict)
+	}
 	if err != nil {
 		return ZCodeVerification{}, err
 	}

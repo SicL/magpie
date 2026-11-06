@@ -124,6 +124,46 @@ func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.S
 		}
 		return true
 	}
+
+	mux.HandleFunc("GET /api/orchestration/agents/zcode/local-model", func(rw http.ResponseWriter, r *http.Request) {
+		if !allowed(rw) {
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		item, err := s.GetZCodeLocalModel()
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, item)
+	})
+	mux.HandleFunc("POST /api/orchestration/agents/zcode/local-model", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var in struct {
+			BaseURL string `json:"baseUrl"`
+			ModelID string `json:"modelId"`
+		}
+		if err := orchestrationReadJSON(rw, r, &in); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		item, err := s.SetZCodeLocalModel(in.BaseURL, in.ModelID)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, item)
+	})
+
 	mux.HandleFunc("GET /api/orchestration/agents/zcode/config", func(rw http.ResponseWriter, r *http.Request) {
 		if !allowed(rw) {
 			return

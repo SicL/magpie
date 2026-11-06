@@ -262,3 +262,26 @@ func TestZCodeCanaryBlocksUnresolvedRun(t *testing.T) {
 		t.Fatalf("unresolved run canary permitted: %v", err)
 	}
 }
+
+func TestZCodeProbeAcceptsJsonAdvertisedByOfficialHelp(t *testing.T) {
+	s, _, _ := setupRunner(t, "complete")
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("Node.js unavailable")
+	}
+	folder := t.TempDir()
+	binary := filepath.Join(folder, "zcode.cjs")
+	source := `const argv=process.argv.slice(2);
+if(argv.includes("--help")){console.log("--prompt --cwd --mode --disallowed-tools --json");process.exit(0);}
+if(argv.includes("--version")){console.log("0.17.1");process.exit(0);}
+process.exit(1);`
+	if err := os.WriteFile(binary, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetZCodeCLI(binary); err != nil {
+		t.Fatal(err)
+	}
+	cap, err := s.ProbeZCodeCLI()
+	if err != nil || !cap.CLIFound || cap.Version != "0.17.1" {
+		t.Fatalf("official help with --json rejected %+v %v", cap, err)
+	}
+}

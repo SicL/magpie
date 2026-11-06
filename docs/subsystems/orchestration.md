@@ -302,3 +302,57 @@ Browser tests cover the configuration, independent CLI probe, per-task
 model verification and plan launch. Real CLI smoke under isolated HOME
 failed with no selected model, so authenticated execution remains UNVERIFIED.
 Full release acceptance is a separate gate.
+
+## P7 loopback-only ZCode model selection
+
+P7 adds a small direct setup UI for a **local, keyless OpenAI Chat Completions**
+server such as LM Studio or another compatible runtime. It does not read
+other agents' login state or expose a remote API key store.
+
+### Configuration source of truth
+
+- `GET/POST /api/orchestration/agents/zcode/local-model` is desktop-only;
+  web mode cannot read/write it and cross-site writes are forbidden.
+- The operator enters an OpenAI-compatible HTTP URL using exactly
+  `127.0.0.1` or `[::1]`, an explicit port, the `/v1` path, and a model ID.
+  Hostnames, cloud URLs, userinfo, querystrings, alternate paths,
+  malformed ports or invalid IDs fail validation.
+- Magpie writes only its own `isolated-zcode/magpie-local-provider.json`
+  under the orchestration Store directory, using an atomic temporary file.
+  This version-1 file contains `magpie-local-loopback`, the selected
+  provider/model and the fixed non-secret `local-no-key` placeholder.
+  It contains no real authentication token.
+- The file is not the user's ZCode Desktop or standalone CLI profile.
+  The child process uses `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` to select
+  this path explicitly; it still has its own per-task HOME/USERPROFILE.
+- A missing file means 'not configured'. A malformed, altered, symlinked,
+  oversized or unreadable existing file is an error, **not** silently
+  reset to defaults or overwritten. Configuration is not shared with
+  unrelated agents or Magpie's model gateway.
+- Changing the model clears all recorded ZCode plan model canaries.
+  Active or unresolved ZCode plan Runs block config updates. A canary
+  checks its executable+model fingerprint before and after calling the
+  model to reject changes made while it was running.
+- If no local model profile is configured, P6's explicitly isolated
+  standalone CLI model configuration remains unchanged.
+
+### Verification and limitations
+
+- Source of the format: ZCode `provider-config-file-codec.ts`, personal
+  provider configuration docs, and `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`.
+- A live successful model verification still requires a running local
+  model server. CLI build/doctor/help and a simulated model response
+  do not prove actual model inference.
+- The official ZCode CLI 0.17.1 help advertises `--json` but not
+  `--output-format` even though the headless output format is supported.
+  Capability detection accepts either marker, with a dedicated
+  regression test; the existing stream-json invocation is unchanged.
+- A developer-only Go integration test runs the **real** ZCode binary
+  against an `httptest` OpenAI-compatible server, from a clean isolated
+  Git Worktree, through Magpie's per-task canary and owned Run path.
+  Enable with `MAGPIE_ZCODE_CLI_INTEGRATION=/absolute/zcode.cjs`.
+  It is skipped when that environment variable is absent and never
+  depends on an external paid model or any user credentials.
+- No OS process sandbox, no unattended editing/merging, and no
+  authenticated remote/third-party provider integration are provided.
+  DSH and WorkBuddy behavior remains unchanged.
