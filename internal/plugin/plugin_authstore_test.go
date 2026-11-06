@@ -57,11 +57,22 @@ func TestStopLetsARenewalEnd(t *testing.T) {
 	}
 	start := time.Now()
 	Restart()
-	if a := authFile(t)[key]; a["refresh"] != "r-slow+" || a["access"] != "a-1" {
-		t.Fatalf("after stopping %v in, kept %v, not the renewed token", time.Since(start).Round(time.Millisecond), a)
+	// Restart retires a host asynchronously while a call is still draining.
+	// The in-flight renewal must be persisted before the retirement deadline,
+	// not necessarily before Restart returns.
+	deadline := start.Add(stopRenewing + time.Second)
+	for {
+		a := authFile(t)[key]
+		if a["refresh"] == "r-slow+" && a["access"] == "a-1" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after stopping %v in, kept %v, not the renewed token", time.Since(start).Round(time.Millisecond), a)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if d := time.Since(start); d > stopRenewing+time.Second {
-		t.Fatalf("stopping took %v", d)
+		t.Fatalf("renewal after stopping took %v", d)
 	}
 }
 
