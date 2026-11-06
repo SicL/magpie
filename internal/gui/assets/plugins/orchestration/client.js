@@ -11,6 +11,7 @@ magpie.plugin("orchestration", (ctx) => {
   let showingZCodeSetup = false;
   let zcodeConfig = null;
   let zcodeLocalModel = null;
+  let zcodeLocalReadiness = null;
   let zcodeProbe = null;
   let zcodeVerified = new Set();
   let editingDeps = "";
@@ -245,6 +246,20 @@ magpie.plugin("orchestration", (ctx) => {
     const address=field("Local model API URL","http://127.0.0.1:1234/v1",zcodeLocalModel?.baseUrl||"http://127.0.0.1:1234/v1");
     const model=field("Local model ID","qwen-local",zcodeLocalModel?.modelId||"");
     form.append(address.box,model.box);
+    if(zcodeLocalReadiness){
+      const labels={
+        unconfigured:t("Local model is not configured"),
+        unreachable:t("Local model server cannot be reached"),
+        unexpected_response:t("Model server response is not usable"),
+        model_missing:t("Configured model was not found on server"),
+        ready:t("Local model is listed by the server")
+      };
+      const line=el("p","orch-capability",
+        (labels[zcodeLocalReadiness.status]||t("Model server response is not usable"))+
+        " · "+zcodeLocalReadiness.availableModels+" "+t("models available"));
+      form.append(line);
+    }
+    form.append(el("p","orch-safety",t("A model-list check does not authorize Agent execution; task model verification is still required.")));
     const actions=el("div","orch-actions");
     const save=button("Save local model",()=>{});
     save.type="submit";save.onclick=null;
@@ -253,10 +268,15 @@ magpie.plugin("orchestration", (ctx) => {
       perform(async()=>{
         zcodeLocalModel=await api("orchestration/agents/zcode/local-model",{baseUrl:address.input.value,modelId:model.input.value});
         zcodeVerified.clear();
+        zcodeLocalReadiness=null;
         status(t("Local model saved; reverify task model"),"ok");
       });
     };
-    actions.append(save);
+    actions.append(save,button("Check local model server",()=>perform(async()=>{
+      zcodeLocalReadiness=await api("orchestration/agents/zcode/local-model/check",{confirm:true});
+      status(zcodeLocalReadiness.status==="ready"?t("Local model is listed by the server"):t("Local model server check completed"),
+             zcodeLocalReadiness.status==="ready"?"ok":"err");
+    })));
     form.append(actions);
     return form;
   }
@@ -280,6 +300,7 @@ magpie.plugin("orchestration", (ctx) => {
         zcodeConfig=await api("orchestration/agents/zcode/config",{executable:cli.input.value});
         zcodeProbe=null;
         zcodeVerified.clear();
+        zcodeLocalReadiness=null;
         status(t("ZCode CLI path saved"),"ok");
       });
     };

@@ -84,6 +84,10 @@ function serve(lang, data) {
     return json({projectId:"p1",started:[],skipped:[]});
 
 
+  if(url.pathname==="/api/orchestration/agents/zcode/local-model/check"){
+    return json({configured:data.zcodeLocalModel.configured,reachable:true,modelFound:true,
+      availableModels:1,status:"ready"});
+  }
   if(url.pathname==="/api/orchestration/agents/zcode/local-model"){
     if(req.method()==="POST"){
       data.zcodeLocalModel={...req.postDataJSON(),configured:true};
@@ -169,6 +173,9 @@ for(const engine of ["chromium","webkit"]){
   await page.locator("#view-orchestration").getByRole("button",{name:"保存本地模型"}).click();
   await page.waitForFunction(() => !document.querySelector("#view-orchestration")?.classList.contains("orch-busy"));
   assert.equal(data.zcodeLocalModel.modelId,"qwen3-local");
+  await page.locator("#view-orchestration").getByRole("button",{name:"检查本地模型服务"}).click();
+  await page.locator("#view-orchestration").getByText(/服务已列出选定的本地模型/).first().waitFor();
+  assert.equal(data.zcodeVerified,false,"readiness must not act as a model canary");
   await page.locator("#view-orchestration .orch-form").getByRole("button",{name:"核验 ZCode CLI"}).click();
   await page.locator("#view-orchestration").getByText(/ZCode CLI 计划模式参数核验通过/).waitFor();
   await page.locator("#view-orchestration").getByRole("button",{name:"配置 ZCode CLI"}).click();

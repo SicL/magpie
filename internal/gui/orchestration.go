@@ -125,6 +125,33 @@ func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.S
 		return true
 	}
 
+	mux.HandleFunc("POST /api/orchestration/agents/zcode/local-model/check", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Confirm bool `json:"confirm"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		if !input.Confirm {
+			orchestrationFailure(rw, orchestration.ErrInvalid)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		status, err := s.ProbeZCodeLocalModel()
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, status)
+	})
+
 	mux.HandleFunc("GET /api/orchestration/agents/zcode/local-model", func(rw http.ResponseWriter, r *http.Request) {
 		if !allowed(rw) {
 			return
