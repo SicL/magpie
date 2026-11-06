@@ -570,3 +570,49 @@ unverified until a matching GitHub result is checked.
   `httptest` GitHub JSON fixtures, no live external network. Desktop
   permission guards and Chromium/WebKit UI checks are in existing
   orchestration tests.
+
+## P12: canonical Worktree paths and credential-free Projects browser regression
+
+Magpie's full macOS CI on the P11 branch found Worktree alias,
+CodeBuddy test-fixture and built-in-plugin expectations that the focused
+Windows/Linux orchestration gate did not exercise. On macOS, `/var`
+may resolve to `/private/var`; a raw path comparison is neither a
+correct containment test nor a correct assertion of CLI isolation.
+
+- `Store.CreateProject` now resolves the requested Worktree root
+  through `prospectivePath` **before** its repository containment check
+  and before inserting it into SQLite. This resolves the nearest
+  existing symlink ancestor without creating a directory, and
+  rejects symlink aliases that lead *into* the registered repository.
+  The path stored in `projects.worktree_root` is canonical.
+- `checkedWorktreeRoot` still performs its own creation-time
+  containment checks. Existing Git Worktrees are not moved, reset or
+  deleted as part of this compatibility improvement.
+- Integration tests assert that an alias to an in-repository directory
+  is rejected, an alias to a safe sibling is registered canonically,
+  and registration never creates a Worktree directory. Existing
+  Worktree and CodeBuddy test fixtures compare filesystem identities
+  instead of equivalent macOS paths as unequal raw strings.
+- The Projects built-in plugin's name and description are translated
+  globally; test expectations account for the additional opt-in
+  `orchestration` built-in in the Essentials preset.
+- All currently declared Projects desktop API routes are individually
+  classified as missing a matching terminal command in the project's
+  CLI/GUI parity registry. This does **not** provide or pretend a
+  CLI implementation: the parity test still detects any future route
+  not explicitly reviewed.
+- The focused `Orchestration Gate` has a separate Linux browser job.
+  It installs a pinned Playwright dependency and Chromium/WebKit,
+  runs the Projects UI fixture workflow with no provider key,
+  live Magpie database or desktop credential access, and uploads
+  the two captured narrow-viewport screenshots as a CI artifact.
+  Screenshots include only fabricated test content. This is not
+  native Windows WebView2 acceptance and is not the upstream's
+  secret-dependent real-app UI preview workflow.
+- `plugins/all/all.go` is formatted with standard `gofmt` only;
+  the import list is the same and the Go plugin registration logic
+  is unchanged.
+
+Full macOS/provider and UI-preview release gates remain separate.
+Do not bypass or mask a failing check, inject a provider key from a
+desktop app, or claim unattended CodeBuddy execution is safe.

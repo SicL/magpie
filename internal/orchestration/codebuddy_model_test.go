@@ -33,7 +33,7 @@ if(args.includes("--print")){
   if(value("--tools")!==""||value("--permission-mode")!=="plan"||value("--max-turns")!=="1"||!args.includes("--no-session-persistence")||!args.includes("--strict-mcp-config"))process.exit(9);
   const conf=value("--mcp-config");
   if(!conf||JSON.parse(fs.readFileSync(conf,"utf8")).mcpServers===undefined)process.exit(9);
-  if(process.cwd()!==process.env.HOME)process.exit(10);
+  if(fs.realpathSync(process.cwd())!==fs.realpathSync(process.env.HOME))process.exit(10);
   if(process.env.CODEBUDDY_API_KEY||process.env.OPENAI_API_KEY||process.env.CODEBUDDY_IS_SANDBOX||process.env.ZCODE_DATA_BASE_DIR)process.exit(11);
   if(!args.some(x=>x.includes("MAGPIE_CODEBUDDY_READ_ONLY_CANARY_OK")))process.exit(12);
   if("MODE"==="fail"){console.error("credentials hidden");process.exit(1)}

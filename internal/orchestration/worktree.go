@@ -50,14 +50,20 @@ func prospectivePath(path string) (string, error) {
 	}
 	missing := []string{}
 	for {
-		info, statErr := os.Lstat(current)
+		_, statErr := os.Lstat(current)
 		if statErr == nil {
-			if len(missing) > 0 && !info.IsDir() {
-				return "", fmt.Errorf("%w: non-directory worktree ancestor", ErrInvalid)
-			}
 			real, err := filepath.EvalSymlinks(current)
 			if err != nil {
 				return "", err
+			}
+			// os.Lstat reports a directory symlink as ModeSymlink.
+			// Check its resolved target, not the link itself, while
+			// rejecting regular-file ancestors and broken links.
+			if len(missing) > 0 {
+				resolvedInfo, err := os.Stat(real)
+				if err != nil || !resolvedInfo.IsDir() {
+					return "", fmt.Errorf("%w: non-directory worktree ancestor", ErrInvalid)
+				}
 			}
 			for i := len(missing) - 1; i >= 0; i-- {
 				real = filepath.Join(real, missing[i])

@@ -34,7 +34,11 @@ func TestCreateWorktreeWithoutChangingMainCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wt.Path == repo || !strings.HasPrefix(wt.Path, worktreeRoot) {
+	expectedRoot, err := prospectivePath(worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wt.Path == repo || !strings.HasPrefix(wt.Path, expectedRoot+string(os.PathSeparator)) {
 		t.Fatalf("not isolated: %+v", wt)
 	}
 	if !strings.HasPrefix(wt.Branch, "agent/task-") {

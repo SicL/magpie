@@ -172,9 +172,13 @@ func (s *Store) CreateProject(input Project) (Project, error) {
 	if worktree == "" {
 		worktree = filepath.Join(filepath.Dir(repo), ".agent-worktrees", filepath.Base(repo))
 	}
-	worktree, err = filepath.Abs(worktree)
+	// Canonicalize through the nearest existing ancestor without creating
+	// directories. On macOS /var points at /private/var; a lexical path
+	// comparison otherwise misses an in-repository Worktree destination.
+	// The same check rejects external symlinks that resolve into the repo.
+	worktree, err = prospectivePath(worktree)
 	if err != nil {
-		return Project{}, fmt.Errorf("%w: worktree directory", ErrInvalid)
+		return Project{}, fmt.Errorf("%w: invalid worktree directory: %v", ErrInvalid, err)
 	}
 	rel, err := filepath.Rel(repo, worktree)
 	if err != nil || rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))) {
