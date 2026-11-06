@@ -83,6 +83,14 @@ function serve(lang, data) {
   if(url.pathname==="/api/orchestration/projects/p1/dispatch")
     return json({projectId:"p1",started:[],skipped:[]});
 
+
+  if(url.pathname==="/api/orchestration/agents/zcode/local-model"){
+    if(req.method()==="POST"){
+      data.zcodeLocalModel={...req.postDataJSON(),configured:true};
+      data.zcodeVerified=false;
+    }
+    return json(data.zcodeLocalModel);
+  }
   if(url.pathname==="/api/orchestration/agents/zcode/config"){
     if(req.method()==="POST"){
       data.zcodeConfig={executable:req.postDataJSON().executable,configured:true,mode:"plan"};
@@ -142,7 +150,7 @@ for(const engine of ["chromium","webkit"]){
   t.after(()=>ctx.close());
   const page=await ctx.newPage();
   page.setDefaultTimeout(9000);
-  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],dependencies:[],copied:"",zcodeConfig:{configured:false,mode:"plan",executable:""},zcodeVerified:false};
+  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],dependencies:[],copied:"",zcodeConfig:{configured:false,mode:"plan",executable:""},zcodeLocalModel:{configured:false},zcodeVerified:false};
   await page.route("**/*",serve("zh",data));
   await page.goto("http://magpie.test/?view=orchestration");
   await page.locator("#view-orchestration .orch-head").waitFor({timeout:10000});
@@ -156,6 +164,11 @@ for(const engine of ["chromium","webkit"]){
   await page.locator("#view-orchestration .orch-form").getByRole("button",{name:"保存 ZCode CLI 路径"}).click();
   await page.waitForFunction(() => !document.querySelector("#view-orchestration")?.classList.contains("orch-busy"));
   assert.equal(data.zcodeConfig.configured,true);
+  await page.locator("#view-orchestration").getByRole("textbox",{name:"本地模型 API 地址"}).fill("http://127.0.0.1:1234/v1");
+  await page.locator("#view-orchestration").getByRole("textbox",{name:"本地模型名称"}).fill("qwen3-local");
+  await page.locator("#view-orchestration").getByRole("button",{name:"保存本地模型"}).click();
+  await page.waitForFunction(() => !document.querySelector("#view-orchestration")?.classList.contains("orch-busy"));
+  assert.equal(data.zcodeLocalModel.modelId,"qwen3-local");
   await page.locator("#view-orchestration .orch-form").getByRole("button",{name:"核验 ZCode CLI"}).click();
   await page.locator("#view-orchestration").getByText(/ZCode CLI 计划模式参数核验通过/).waitFor();
   await page.locator("#view-orchestration").getByRole("button",{name:"配置 ZCode CLI"}).click();

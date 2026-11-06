@@ -10,6 +10,7 @@ magpie.plugin("orchestration", (ctx) => {
   let showingCapabilities = false;
   let showingZCodeSetup = false;
   let zcodeConfig = null;
+  let zcodeLocalModel = null;
   let zcodeProbe = null;
   let zcodeVerified = new Set();
   let editingDeps = "";
@@ -236,6 +237,30 @@ magpie.plugin("orchestration", (ctx) => {
   }
 
 
+
+  function zcodeLocalModelEditor(){
+    const form=el("form","orch-form");
+    form.append(el("b","",t("Local model configuration")));
+    form.append(el("p","orch-safety",t("Only a model on 127.0.0.1 or [::1] is supported. No API keys are saved or inherited; start your local model server separately.")));
+    const address=field("Local model API URL","http://127.0.0.1:1234/v1",zcodeLocalModel?.baseUrl||"http://127.0.0.1:1234/v1");
+    const model=field("Local model ID","qwen-local",zcodeLocalModel?.modelId||"");
+    form.append(address.box,model.box);
+    const actions=el("div","orch-actions");
+    const save=button("Save local model",()=>{});
+    save.type="submit";save.onclick=null;
+    form.onsubmit=e=>{
+      e.preventDefault();
+      perform(async()=>{
+        zcodeLocalModel=await api("orchestration/agents/zcode/local-model",{baseUrl:address.input.value,modelId:model.input.value});
+        zcodeVerified.clear();
+        status(t("Local model saved; reverify task model"),"ok");
+      });
+    };
+    actions.append(save);
+    form.append(actions);
+    return form;
+  }
+
   function zcodeSettingsEditor() {
     const form=el("form","orch-form");
     form.append(el("b","",t("ZCode CLI setup")));
@@ -356,7 +381,10 @@ magpie.plugin("orchestration", (ctx) => {
     if(!web){
       head.append(button("Configure ZCode CLI",async()=>{
         if(!showingZCodeSetup){
-          try{zcodeConfig=await api("orchestration/agents/zcode/config");}
+          try{[zcodeConfig,zcodeLocalModel]=await Promise.all([
+            api("orchestration/agents/zcode/config"),
+            api("orchestration/agents/zcode/local-model")
+          ]);}
           catch(e){status(e.message,"err");return;}
         }
         showingZCodeSetup=!showingZCodeSetup;
@@ -382,6 +410,7 @@ magpie.plugin("orchestration", (ctx) => {
 
     if (projectForm) page.append(projectEditor());
     if(showingZCodeSetup && !web) page.append(zcodeSettingsEditor());
+    if(showingZCodeSetup && !web) page.append(zcodeLocalModelEditor());
 
     const grid = el("div", "orch-grid");
     const left = el("section", "orch-section");

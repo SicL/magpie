@@ -123,11 +123,17 @@ func (s *Store) ProbeZCodeCLI() (AgentCapability, error) {
 		cap.Reason = "ZCode CLI help probe failed"
 		return cap, nil
 	}
-	for _, flag := range []string{"--prompt", "--mode", "--cwd", "--output-format", "--disallowed-tools"} {
+	for _, flag := range []string{"--prompt", "--mode", "--cwd", "--disallowed-tools"} {
 		if !strings.Contains(string(out), flag) {
 			cap.Reason = "ZCode CLI lacks required safe plan-mode argument: " + flag
 			return cap, nil
 		}
+	}
+	// Some official ZCode builds accept --output-format stream-json but
+	// advertise only --json in --help. Both are supported protocol markers.
+	if !strings.Contains(string(out), "--output-format") && !strings.Contains(string(out), "--json") {
+		cap.Reason = "ZCode CLI lacks structured JSON headless output"
+		return cap, nil
 	}
 	cap.CLIFound = true
 	cmd, args, err = zcodeInvocation(path, "--version")
@@ -230,5 +236,9 @@ func (r *RunService) StartZCodePlan(taskID string, revision int64) (Run, error) 
 	if err != nil {
 		return Run{}, err
 	}
-	return r.launchRun(t, revision, cwd, adapterZCodePlan, executable, fullArgs, "", "", zcodeSafeEnvironment(home))
+	env, e := r.store.zcodeEnvironment(home)
+	if e != nil {
+		return Run{}, e
+	}
+	return r.launchRun(t, revision, cwd, adapterZCodePlan, executable, fullArgs, "", "", env)
 }
