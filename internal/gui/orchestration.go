@@ -617,6 +617,77 @@ func mountOrchestrationRoutes(mux *http.ServeMux, store func() (*orchestration.S
 		writeJSON(rw, items)
 	})
 
+	mux.HandleFunc("POST /api/orchestration/tasks/{id}/handoff/ci-check", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Confirm bool `json:"confirm"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		if !input.Confirm {
+			orchestrationFailure(rw, orchestration.ErrInvalid)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		result, err := s.GitHubCIForHandoff(r.PathValue("id"))
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, result)
+	})
+	mux.HandleFunc("GET /api/orchestration/tasks/{id}/handoff/ci-proofs", func(rw http.ResponseWriter, r *http.Request) {
+		if !allowed(rw) {
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		result, err := s.HandoffCIProofs(r.PathValue("id"))
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		writeJSON(rw, result)
+	})
+	mux.HandleFunc("POST /api/orchestration/tasks/{id}/handoff/ci-proofs", func(rw http.ResponseWriter, r *http.Request) {
+		if !executionAllowed(rw, r) {
+			return
+		}
+		var input struct {
+			Confirm     bool   `json:"confirm"`
+			Revision    int64  `json:"revision"`
+			Fingerprint string `json:"fingerprint"`
+		}
+		if err := orchestrationReadJSON(rw, r, &input); err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		if !input.Confirm {
+			orchestrationFailure(rw, orchestration.ErrInvalid)
+			return
+		}
+		s, ok := db(rw)
+		if !ok {
+			return
+		}
+		result, err := s.VerifyCIHandoff(r.PathValue("id"), input.Revision, input.Fingerprint)
+		if err != nil {
+			orchestrationFailure(rw, err)
+			return
+		}
+		rw.WriteHeader(http.StatusCreated)
+		writeJSON(rw, result)
+	})
+
 	mux.HandleFunc("GET /api/orchestration/tasks/{id}/handoff", func(rw http.ResponseWriter, r *http.Request) {
 		if !allowed(rw) {
 			return

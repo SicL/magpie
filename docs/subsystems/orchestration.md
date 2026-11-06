@@ -515,3 +515,58 @@ an invitation to copy Desktop credentials or to bypass permissions.
 Independent CI, full Go and browser suites, manual WebView2 testing,
 OS sandboxing, authenticated coding and fully automated three-Agent
 execution remain outside P10 acceptance.
+
+## P11: independently checked GitHub CI evidence
+
+On P10, a human-reported `passed` checkpoint and acknowledged handoff
+did not imply an independent CI runner had tested the code. P11 adds a
+**separate, optional CI proof**; a plain manual handoff remains explicitly
+unverified until a matching GitHub result is checked.
+
+- `.github/workflows/orchestration-gate.yml` runs a focused, no-production
+  orchestration regression on Windows and Linux on relevant feature
+  pushes/PRs; it checks Go formatting, Go vet, targeted orchestration
+  tests and the Projects UI's JavaScript syntax. This is not the
+  repository's entire release suite or WebView2 manual acceptance.
+- `POST /api/orchestration/tasks/{id}/handoff/ci-check` needs desktop
+  same-origin JSON `{confirm:true}`. It recomputes the live Git
+  handoff, reads the task Worktree's `origin` remote and accepts only
+  an explicitly formatted public `github.com` owner/repository.
+  It calls **only** GitHub's fixed `api.github.com` check-runs and
+  combined-status endpoints for that **exact 40-hex Git HEAD**.
+  It does not read `gh` login state or provider tokens, use secrets,
+  or send user prompts/source files to GitHub.
+- Redirects are forbidden and responses bounded to 512 KiB, with a
+  9-second overall request limit. The verifier evaluates the full
+  GitHub check count (at most 100), each check-run's HEAD SHA,
+  completion status and conclusion, and any legacy status contexts.
+  Only non-empty, fully successful checks yield `verified`.
+  Zero checks, pending or failed contexts, rate limits, non-GitHub
+  remotes, SHA mismatches and oversized/error responses are fail-closed
+  (`no_checks`, `pending`, `failed`, `unavailable`,
+  `unsupported_remote` or `handoff_blocked`).
+- A **verified proof record** is a separate append-only
+  `agent_handoff_ci_proofs` SQLite row referencing a pre-existing
+  manual handoff receipt. The operator explicitly calls
+  `POST /api/orchestration/tasks/{id}/handoff/ci-proofs` with
+  `{confirm:true,revision,fingerprint}`. The server checks live
+  GitHub CI *again*, and recomputes the task Git snapshot before
+  adding a record with the exact commit SHA, repository, fingerprint,
+  check count and checked-at time. Duplicate receipts are rejected.
+- `GET /api/orchestration/tasks/{id}/handoff/ci-proofs` shows proof
+  history. The Projects UI deliberately displays manual handoff
+  confirmation and independently verified CI records as different
+  evidence. Check results are fetched **only after the user clicks**
+  Check GitHub CI; there are no continuous remote API calls.
+- This proof is a historical observation, not a digital signature,
+  persistent Agent authorization, guaranteed CI quality or future
+  branch protection. GitHub check runs can be re-run or edited; an
+  eventual real Agent execution must recheck current project state,
+  live CI, permissions, Worktree, and process lease. Missing CI
+  evidence does **not** silently change the earlier manual-only
+  handoff policy, but it can never be labelled independently verified.
+- The Go implementation and tests are in
+  `internal/orchestration/ci.go` and `ci_test.go`; tests use only
+  `httptest` GitHub JSON fixtures, no live external network. Desktop
+  permission guards and Chromium/WebKit UI checks are in existing
+  orchestration tests.
