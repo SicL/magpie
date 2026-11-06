@@ -328,5 +328,10 @@ await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"�
   assert.match(await page.locator("#view-orchestration .orch-dispatch-report").innerText(),/DSH 派发结果/);
   const sizing=await page.locator("#view-orchestration .orch-grid").evaluate((node)=>({width:node.clientWidth,scroll:node.scrollWidth}));
   assert.ok(sizing.scroll<=sizing.width+2, "narrow layout overflow: "+JSON.stringify(sizing));
+  const screenshotDir=process.env.MAGPIE_ORCH_SCREENSHOT_DIR;
+  if(screenshotDir){
+    await fs.mkdir(screenshotDir,{recursive:true});
+    await page.screenshot({path:path.join(screenshotDir,engine+"-projects-narrow.png"),fullPage:true});
+  }
  });
 }

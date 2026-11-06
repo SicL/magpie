@@ -49,21 +49,54 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          if [ -n "$(gofmt -l internal/orchestration/*.go internal/gui/orchestration*.go)" ]; then
-            gofmt -l internal/orchestration/*.go internal/gui/orchestration*.go
+          if [ -n "$(gofmt -l internal/orchestration/*.go internal/gui/orchestration*.go internal/cli/settings_parity_test.go plugins/all/all.go)" ]; then
+            gofmt -l internal/orchestration/*.go internal/gui/orchestration*.go internal/cli/settings_parity_test.go plugins/all/all.go
             exit 1
           fi
       - name: Vet focused Go packages
         shell: bash
-        run: go vet -tags nogui ./internal/orchestration ./internal/gui
+        run: go vet -tags nogui ./internal/orchestration ./internal/gui ./internal/cli
       - name: Run isolated orchestration regressions
         shell: bash
         run: |
-          go test -tags nogui -count=1 -timeout=12m ./internal/orchestration ./internal/gui \
-            -run 'Test(GitHubCI|ParseGitHubCI|Handoff|GitHandoff|CodeBuddy|ZCode|OfficialZCode|RunService|ResumeUsesOwned|Dependency|Orchestration|Dispatch)'
+          go test -tags nogui -count=1 -timeout=12m ./internal/orchestration ./internal/gui ./internal/cli \
+            -run 'Test(GitHubCI|ParseGitHubCI|Handoff|GitHandoff|CodeBuddy|ZCode|OfficialZCode|RunService|ResumeUsesOwned|Dependency|Orchestration|Dispatch|ProjectsPersist|ProjectWorktree|CreateWorktree|Builtin|BootSaysBuiltinsOff|EveryRouteHasACommandOrIsNamed)'
       - name: Parse Projects UI assets
         shell: bash
         run: |
           node --check internal/gui/assets/plugins/orchestration/client.js
           node --check internal/gui/assets/plugins/orchestration/i18n.js
+          node --check internal/gui/assets/i18n.js
           node --check internal/gui/tests/orchestration-page.test.cjs
+
+  browser:
+    name: projects browser (Chromium / WebKit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # Only tests fixture-backed Projects routes; no personal profile,
+      # live model, provider key or repository write permission is used.
+      - name: Install pinned Playwright and browser dependencies
+        shell: bash
+        run: |
+          npm --prefix .github/ui-preview install --no-audit --no-fund --ignore-scripts
+          cd .github/ui-preview
+          npx playwright install --with-deps chromium webkit
+      - name: Exercise Projects handoff in Chromium and WebKit
+        shell: bash
+        env:
+          NODE_PATH: ${{ github.workspace }}/.github/ui-preview/node_modules
+          MAGPIE_ORCH_SCREENSHOT_DIR: ${{ github.workspace }}/orchestration-test-screenshots
+        run: node --test internal/gui/tests/orchestration-page.test.cjs
+      - name: Keep isolated Projects screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: projects-credential-free-preview
+          path: orchestration-test-screenshots
+          if-no-files-found: ignore
+          retention-days: 7

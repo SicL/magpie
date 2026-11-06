@@ -164,6 +164,53 @@ var cliForRoute = map[string]string{
 }
 
 var notYet = map[string]string{
+	// Projects/Tasks has desktop APIs without matching CLI commands.
+	// Every route is enumerated: new routes still fail parity until reviewed.
+	"GET /api/orchestration/agents/capabilities":             A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/agents/codebuddy/config":         A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/agents/dsh":                      A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/agents/zcode/config":             A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/agents/zcode/local-model":        A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/dependencies":                    A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/projects":                        A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/runs":                            A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/runs/{id}":                       A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/runs/{id}/log":                   A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/tasks":                           A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/tasks/{id}/checkpoints":          A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/tasks/{id}/handoff":              A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/tasks/{id}/handoff/ci-proofs":    A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/tasks/{id}/handoffs":             A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/tasks/{id}/readiness":            A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/tasks/{id}/recoveries":           A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/tasks/{id}/zcode/verification":   A, // orchestration.go: CLI equivalent not yet implemented
+	"GET /api/orchestration/worktrees":                       A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/agents/codebuddy/config":        A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/agents/codebuddy/model/check":   A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/agents/codebuddy/probe":         A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/agents/zcode/config":            A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/agents/zcode/local-model":       A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/agents/zcode/local-model/check": A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/agents/zcode/probe":             A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/projects":                       A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/projects/{id}/dispatch":         A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/projects/{id}/remove":           A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/runs/{id}/reconcile":            A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/runs/{id}/stop":                 A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks":                          A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/checkpoints":         A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/dependencies":        A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/handoff/ci-check":    A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/handoff/ci-proofs":   A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/handoffs":            A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/plan-zcode":          A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/remove":              A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/resume":              A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/run":                 A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/status":              A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/worktree":            A, // orchestration.go: CLI equivalent not yet implemented
+	"POST /api/orchestration/tasks/{id}/zcode/verify":        A, // orchestration.go: CLI equivalent not yet implemented
+
 	"POST /api/agent-fast":                       A,  // agent_models.go
 	"POST /api/agent-models/{id}":                A,  // agent_models.go
 	"GET /api/agents/cli":                        A,  // api.go

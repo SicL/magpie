@@ -129,3 +129,35 @@ func TestTaskStatusCompareAndSet(t *testing.T) {
 		t.Fatalf("remaining tasks %+v %v", tasks, err)
 	}
 }
+
+func TestProjectWorktreeRootSymlinkAliasesAreCanonicalAndSafe(t *testing.T) {
+	repo := testRepo(t)
+	db, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	alias := filepath.Join(t.TempDir(), "link-to-repo-parent")
+	if err := os.Symlink(filepath.Dir(repo), alias); err != nil {
+		t.Skipf("symlinks unavailable on this host: %v", err)
+	}
+	dangerous := filepath.Join(alias, filepath.Base(repo), "nested-worktrees")
+	if _, err = db.CreateProject(Project{Name: "symlink escape", RepoPath: repo, WorktreeRoot: dangerous}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("indirect repository Worktree root allowed: %v", err)
+	}
+	safeAlias := filepath.Join(alias, "sibling-worktrees")
+	expected, err := prospectivePath(safeAlias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := db.CreateProject(Project{Name: "canonical sibling", RepoPath: repo, WorktreeRoot: safeAlias})
+	if err != nil {
+		t.Fatalf("safe symlink sibling rejected: %v", err)
+	}
+	if created.WorktreeRoot != expected {
+		t.Fatalf("worktree registration is not canonical: got %q want %q", created.WorktreeRoot, expected)
+	}
+	if _, err = os.Stat(safeAlias); !os.IsNotExist(err) {
+		t.Fatalf("project creation unexpectedly wrote a Worktree root: %v", err)
+	}
+}
