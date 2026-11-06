@@ -34,6 +34,8 @@ magpie.plugin("orchestration", (ctx) => {
   let handoffFor = "";
   let handoffPreview = null;
   let handoffRows = [];
+  let handoffCI = null;
+  let handoffCIRows = [];
   let recoveryRows = [];
 
   function field(title, placeholder, value) {
@@ -217,6 +219,7 @@ magpie.plugin("orchestration", (ctx) => {
       checkpointRows=await api("orchestration/tasks/"+encodeURIComponent(taskId)+"/checkpoints");
       recoveryRows=await api("orchestration/tasks/"+encodeURIComponent(taskId)+"/recoveries");
       handoffRows=await api("orchestration/tasks/"+encodeURIComponent(taskId)+"/handoffs");
+      handoffCIRows=await api("orchestration/tasks/"+encodeURIComponent(taskId)+"/handoff/ci-proofs");
       showingHistory=taskId;
     });
   }
@@ -661,6 +664,7 @@ magpie.plugin("orchestration", (ctx) => {
           actions.append(button("Review Git handoff",()=>perform(async()=>{
             handoffPreview=await api("orchestration/tasks/"+encodeURIComponent(q.id)+"/handoff");
             handoffFor=q.id;
+            handoffCI=null;
           })));
           const handoffButton=button("Copy task handoff",()=>copyHandoff(q,active,existing,latestRun,handoffButton));
           actions.append(handoffButton);
@@ -688,6 +692,35 @@ magpie.plugin("orchestration", (ctx) => {
             panel.append(el("p","orch-failure",t("Handoff blocked")+": "+(handoffPreview.reason||"")));
           }else{
             panel.append(el("p","orch-safety",t("Human acknowledgment records this Git snapshot; it does not certify independent tests or authorize an Agent run.")));
+            panel.append(button("Check GitHub CI",()=>perform(async()=>{
+              handoffCI=await api("orchestration/tasks/"+encodeURIComponent(q.id)+"/handoff/ci-check",{confirm:true});
+              status(handoffCI.status==="verified"?t("GitHub checks verified"):t("GitHub checks not verified"),
+                     handoffCI.status==="verified"?"ok":"err");
+            })));
+            if(handoffCI?.taskId===q.id){
+              const statuses={
+                verified:t("GitHub checks verified"),
+                no_checks:t("No GitHub checks found for this commit"),
+                pending:t("GitHub checks are still pending"),
+                failed:t("GitHub checks failed"),
+                unavailable:t("GitHub checks could not be verified"),
+                unsupported_remote:t("Only public github.com remotes are supported"),
+                handoff_blocked:t("Git handoff is not ready")
+              };
+              panel.append(el("p","orch-capability",
+                (statuses[handoffCI.status]||t("GitHub checks could not be verified"))+
+                " · "+handoffCI.checks+" "+t("independent checks")));
+              if(handoffCI.status==="verified"&&handoffCI.fingerprint===handoffPreview.fingerprint){
+                panel.append(el("p","orch-safety",t("First acknowledge the Git handoff; then record independently verified CI for the same snapshot. CI evidence does not authorize Agent execution.")));
+                panel.append(button("Record verified CI evidence",()=>perform(async()=>{
+                  await api("orchestration/tasks/"+encodeURIComponent(q.id)+"/handoff/ci-proofs",{
+                    confirm:true,revision:handoffPreview.revision,fingerprint:handoffPreview.fingerprint
+                  });
+                  handoffCI=null;
+                  status(t("GitHub CI evidence recorded"),"ok");
+                })));
+              }
+            }
             panel.append(button("Acknowledge Git handoff",()=>perform(async()=>{
               await api("orchestration/tasks/"+encodeURIComponent(q.id)+"/handoffs",{
                 confirm:true,revision:handoffPreview.revision,fingerprint:handoffPreview.fingerprint
@@ -717,6 +750,12 @@ magpie.plugin("orchestration", (ctx) => {
             const entry=el("div","orch-history-entry");
             entry.append(el("span","",t("Acknowledged Git handoff")+" · "+receipt.recipient+" · "+receipt.createdAt));
             entry.append(el("p","",receipt.gitHead.slice(0,12)+" · "+receipt.fingerprint.slice(0,12)));
+            history.append(entry);
+          }
+          for(const proof of handoffCIRows){
+            const entry=el("div","orch-history-entry");
+            entry.append(el("span","",t("Independent GitHub CI verified")+" · "+proof.repository+" · "+proof.checkedAt));
+            entry.append(el("p","",proof.gitHead.slice(0,12)+" · "+proof.checks+" "+t("independent checks")));
             history.append(entry);
           }
           for(const r of recoveryRows){

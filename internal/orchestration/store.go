@@ -94,6 +94,10 @@ func Open(file string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initialize handoff receipts: %w", err)
 	}
+	if err := s.ensureCIProofSchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize CI handoff proofs: %w", err)
+	}
 	if err := s.ensureCheckpointSchema(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize checkpoints: %w", err)

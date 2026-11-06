@@ -609,7 +609,11 @@ func TestGitHandoffPreviewReceiptAndDesktopGuards(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("unconfirmed handoff accepted %d %s", code, body)
 	}
-	code, body = orchestrationRequest(t, mux, "POST", receiptsPath, map[string]any{"revision": snapshot.Revision, "fingerprint": "a" + snapshot.Fingerprint[1:], "confirm": true})
+	wrongHashPrefix := "a"
+	if snapshot.Fingerprint[0] == 'a' {
+		wrongHashPrefix = "b"
+	}
+	code, body = orchestrationRequest(t, mux, "POST", receiptsPath, map[string]any{"revision": snapshot.Revision, "fingerprint": wrongHashPrefix + snapshot.Fingerprint[1:], "confirm": true})
 	if code != http.StatusConflict {
 		t.Fatalf("stale handoff hash accepted %d %s", code, body)
 	}
@@ -621,13 +625,33 @@ func TestGitHandoffPreviewReceiptAndDesktopGuards(t *testing.T) {
 	if code != http.StatusOK || !bytes.Contains(body, []byte(snapshot.Fingerprint)) {
 		t.Fatalf("handoff not persisted %d %s", code, body)
 	}
+	ciCheck := "/api/orchestration/tasks/" + task.ID + "/handoff/ci-check"
+	ciProofs := "/api/orchestration/tasks/" + task.ID + "/handoff/ci-proofs"
+	code, body = orchestrationRequest(t, mux, "POST", ciCheck, map[string]any{"confirm": false})
+	if code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed CI check accepted %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", ciCheck, map[string]any{"confirm": true})
+	if code != http.StatusOK || !bytes.Contains(body, []byte("unsupported_remote")) {
+		t.Fatalf("non-GitHub repo marked verified %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "GET", ciProofs, nil)
+	if code != http.StatusOK || string(bytes.TrimSpace(body)) != "[]" {
+		t.Fatalf("unexpected CI proofs %d %s", code, body)
+	}
+	code, body = orchestrationRequest(t, mux, "POST", ciProofs, map[string]any{"confirm": true, "revision": snapshot.Revision, "fingerprint": snapshot.Fingerprint})
+	if code != http.StatusConflict {
+		t.Fatalf("unsupported repo got CI attestation %d %s", code, body)
+	}
 	browser := http.NewServeMux()
 	mountOrchestrationRoutes(browser, func() (*orchestration.Store, error) { return s, nil }, true)
 	for _, tc := range []struct {
 		method, path string
 		payload      any
 	}{
-		{"GET", path, nil}, {"GET", receiptsPath, nil},
+		{"GET", path, nil}, {"GET", receiptsPath, nil}, {"GET", ciProofs, nil},
+		{"POST", ciCheck, map[string]any{"confirm": true}},
+		{"POST", ciProofs, map[string]any{"confirm": true, "revision": snapshot.Revision, "fingerprint": snapshot.Fingerprint}},
 		{"POST", receiptsPath, map[string]any{"revision": snapshot.Revision, "fingerprint": snapshot.Fingerprint, "confirm": true}},
 	} {
 		code, body = orchestrationRequest(t, browser, tc.method, tc.path, tc.payload)
@@ -643,5 +667,29 @@ func TestGitHandoffPreviewReceiptAndDesktopGuards(t *testing.T) {
 	mux.ServeHTTP(rw, req)
 	if rw.Code != http.StatusForbidden {
 		t.Fatalf("cross-site handoff write allowed %d", rw.Code)
+	}
+}
+
+func TestGitHubCIRoutesRequireSameOrigin(t *testing.T) {
+	s, err := orchestration.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	mux := http.NewServeMux()
+	mountOrchestrationRoutes(mux, func() (*orchestration.Store, error) { return s, nil }, false)
+	for _, route := range []string{
+		"/api/orchestration/tasks/dummy/handoff/ci-check",
+		"/api/orchestration/tasks/dummy/handoff/ci-proofs",
+	} {
+		req := httptest.NewRequest("POST", route, bytes.NewBufferString(`{"confirm":true}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "https://untrusted.example")
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		rw := httptest.NewRecorder()
+		mux.ServeHTTP(rw, req)
+		if rw.Code != http.StatusForbidden {
+			t.Fatalf("cross-site CI action accepted %s status=%d", route, rw.Code)
+		}
 	}
 }

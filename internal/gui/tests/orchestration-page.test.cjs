@@ -35,6 +35,23 @@ function serve(lang, data) {
   }
 
   if(url.pathname==="/api/copy"){data.copied=req.postDataJSON().text;return json({ok:true});}
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/handoff/ci-check"){
+    data.ciChecked=true;
+    return json({taskId:data.tasks[0].id,gitHead:"f".repeat(40),
+      fingerprint:"a".repeat(64),repository:"example/project",checks:2,status:"verified"});
+  }
+  if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/handoff/ci-proofs"){
+    if(req.method()==="POST"){
+      const v=req.postDataJSON();
+      if(!v.confirm||!data.handoffReceipts.length)return json({error:"manual receipt required"},409);
+      data.handoffCIProofs.push({id:"ci-proof-001",taskId:data.tasks[0].id,
+        receiptId:data.handoffReceipts[0].id,fingerprint:v.fingerprint,
+        gitHead:"f".repeat(40),repository:"example/project",checks:2,
+        checkedAt:"2026-11-06T11:05:00Z"});
+      return json(data.handoffCIProofs[data.handoffCIProofs.length-1],201);
+    }
+    return json(data.handoffCIProofs);
+  }
   if(url.pathname==="/api/orchestration/tasks/00112233445566778899aabbccddeeff/handoff"){
     return json({taskId:data.tasks[0].id,revision:data.tasks[0].revision,agent:data.tasks[0].agent,
       ready:data.tasks[0].status==="ready",clean:true,gitHead:"f".repeat(40),
@@ -185,7 +202,7 @@ for(const engine of ["chromium","webkit"]){
   t.after(()=>ctx.close());
   const page=await ctx.newPage();
   page.setDefaultTimeout(9000);
-  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],dependencies:[],handoffReceipts:[],copied:"",zcodeConfig:{configured:false,mode:"plan",executable:""},codeBuddyConfig:{configured:false,mode:"manual-handoff",executable:""},codeBuddyProbed:false,codeBuddyModelChecked:false,zcodeLocalModel:{configured:false},zcodeVerified:false};
+  const data={projects:[],tasks:[],worktrees:[],runs:[],checkpoints:[],recoveries:[],dependencies:[],handoffReceipts:[],handoffCIProofs:[],ciChecked:false,copied:"",zcodeConfig:{configured:false,mode:"plan",executable:""},codeBuddyConfig:{configured:false,mode:"manual-handoff",executable:""},codeBuddyProbed:false,codeBuddyModelChecked:false,zcodeLocalModel:{configured:false},zcodeVerified:false};
   await page.route("**/*",serve("zh",data));
   await page.goto("http://magpie.test/?view=orchestration");
   await page.locator("#view-orchestration .orch-head").waitFor({timeout:10000});
@@ -264,6 +281,13 @@ for(const engine of ["chromium","webkit"]){
   await page.locator("#view-orchestration .orch-task").getByText(/已核验的 Git 交接预览/).waitFor();
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"确认 Git 交接快照"}).click();
   assert.equal(data.handoffReceipts.length,1);
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"核查 Git 交接"}).click();
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"检查 GitHub CI"}).click();
+  await page.locator("#view-orchestration .orch-task").getByText(/GitHub 检查已通过核验/).first().waitFor();
+  assert.equal(data.ciChecked,true);
+  await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"记录已核验的 CI 证据"}).click();
+  assert.equal(data.handoffCIProofs.length,1);
+  assert.equal(data.runs.length,0,"CI verification must never start an agent");
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"检查调度条件"}).click();
   await page.locator("#view-orchestration .orch-task").getByRole("button",{name:"启动 DeepSeek Harness"}).click();
   await page.locator("#view-orchestration .orch-run-summary").waitFor();

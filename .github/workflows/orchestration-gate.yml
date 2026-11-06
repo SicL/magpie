@@ -1,0 +1,69 @@
+name: Orchestration Gate
+
+on:
+  push:
+    branches:
+      - 'feat/orchestration-*'
+    paths:
+      - '.github/workflows/orchestration-gate.yml'
+      - 'internal/orchestration/**'
+      - 'internal/gui/orchestration*.go'
+      - 'internal/gui/assets/plugins/orchestration/**'
+      - 'internal/gui/tests/orchestration-page.test.cjs'
+  pull_request:
+    paths:
+      - '.github/workflows/orchestration-gate.yml'
+      - 'internal/orchestration/**'
+      - 'internal/gui/orchestration*.go'
+      - 'internal/gui/assets/plugins/orchestration/**'
+      - 'internal/gui/tests/orchestration-page.test.cjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orchestration-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    name: orchestration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # Windows checkout may use CRLF; the repository's main CI runs
+      # gofmt on Linux only for the same reason.
+      - name: Verify Go formatting
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if [ -n "$(gofmt -l internal/orchestration/*.go internal/gui/orchestration*.go)" ]; then
+            gofmt -l internal/orchestration/*.go internal/gui/orchestration*.go
+            exit 1
+          fi
+      - name: Vet focused Go packages
+        shell: bash
+        run: go vet -tags nogui ./internal/orchestration ./internal/gui
+      - name: Run isolated orchestration regressions
+        shell: bash
+        run: |
+          go test -tags nogui -count=1 -timeout=12m ./internal/orchestration ./internal/gui \
+            -run 'Test(GitHubCI|ParseGitHubCI|Handoff|GitHandoff|CodeBuddy|ZCode|OfficialZCode|RunService|ResumeUsesOwned|Dependency|Orchestration|Dispatch)'
+      - name: Parse Projects UI assets
+        shell: bash
+        run: |
+          node --check internal/gui/assets/plugins/orchestration/client.js
+          node --check internal/gui/assets/plugins/orchestration/i18n.js
+          node --check internal/gui/tests/orchestration-page.test.cjs
